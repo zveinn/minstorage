@@ -259,6 +259,9 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [showDeleted, setShowDeleted] = useState(false)
+  const [showNotes, setShowNotes] = useState(false)
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
     name: string
     percent: number
@@ -322,6 +325,7 @@ function App() {
     if (selectedBucket && client) {
       setPrefixChildren({})
       setExpandedPrefixes(new Set())
+      setNotes({})
       loadPrefixChildren(selectedBucket, '')
     }
   }, [selectedBucket, client])
@@ -350,6 +354,7 @@ function App() {
           let targetBucket: string | null = null
           let targetPrefix = ''
           let targetShowDeleted = false
+          let targetShowNotes = false
           try {
             const saved = sessionStorage.getItem(STORAGE_STATE_KEY)
             if (saved) {
@@ -363,15 +368,21 @@ function App() {
               if (typeof parsedState.showDeleted === 'boolean') {
                 targetShowDeleted = parsedState.showDeleted
               }
+              if (typeof parsedState.showNotes === 'boolean') {
+                targetShowNotes = parsedState.showNotes
+              }
             }
           } catch {}
 
           if (bucketList.length > 0) {
             const bucketToUse = targetBucket || bucketList[0]
             const prefixToUse = (targetBucket && bucketToUse === targetBucket) ? targetPrefix : ''
-            // Set showDeleted first so the UI toggle reflects restored state
+            // Set showDeleted and showNotes first so the UI toggle reflects restored state
             if (targetShowDeleted !== showDeleted) {
               setShowDeleted(targetShowDeleted)
+            }
+            if (targetShowNotes !== showNotes) {
+              setShowNotes(targetShowNotes)
             }
             setSelectedBucket(bucketToUse)
             setCurrentPrefix(prefixToUse)
@@ -430,10 +441,11 @@ function App() {
         selectedBucket,
         currentPrefix,
         showDeleted,
+        showNotes,
       }
       sessionStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state))
     }
-  }, [selectedBucket, currentPrefix, showDeleted, isLoggedIn])
+  }, [selectedBucket, currentPrefix, showDeleted, showNotes, isLoggedIn])
 
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
@@ -460,6 +472,8 @@ function App() {
       setItems([])
       setCurrentPrefix('')
       setSearch('')
+      setShowNotes(false)
+      setNotes({})
 
       if (bucketList.length > 0) {
         await selectBucket(bucketList[0], s3Client, newCreds)
@@ -492,6 +506,8 @@ function App() {
     clearSelection()
     setPrefixChildren({})
     setExpandedPrefixes(new Set())
+    setNotes({})
+    setShowNotes(false)
     toast.info('Disconnected')
   }
 
@@ -561,6 +577,13 @@ function App() {
     }
   }, [showDeleted])
 
+  // Always load notes for current items (for hover tooltips and display)
+  useEffect(() => {
+    if (selectedBucket && client && items.length > 0) {
+      loadNotesForItems(items)
+    }
+  }, [items, selectedBucket, client])
+
   const navigateTo = (prefix: string) => {
     if (!selectedBucket || !client || !creds) return
     setCurrentPrefix(prefix)
@@ -628,6 +651,34 @@ function App() {
     } catch (e) {
       console.error('Failed to load prefixes for', prefix, e)
     }
+  }
+
+  const loadNotesForItems = async (itemsToLoad: FileItem[]) => {
+    if (!selectedBucket || !client) return
+    const newNotes = { ...notes }
+    const toFetch = itemsToLoad.filter(
+      i => !i.isDir && !newNotes.hasOwnProperty(i.fullPath)
+    )
+    if (toFetch.length === 0) return
+
+    const promises = toFetch.map(async (item) => {
+      try {
+        const res = await client.send(new GetObjectTaggingCommand({
+          Bucket: selectedBucket,
+          Key: item.fullPath,
+        }))
+        const noteTag = res.TagSet?.find(t => t.Key === 'note')
+        if (noteTag?.Value) {
+          newNotes[item.fullPath] = noteTag.Value
+        } else {
+          newNotes[item.fullPath] = '' // explicitly no note
+        }
+      } catch (e) {
+        newNotes[item.fullPath] = '' // error or no tags
+      }
+    })
+    await Promise.all(promises)
+    setNotes(newNotes)
   }
 
   const togglePrefix = (prefix: string) => {
@@ -1619,6 +1670,15 @@ function App() {
                 {showDeleted ? 'Hide deleted' : 'Show deleted'}
               </button>
 
+              <button
+                onClick={() => setShowNotes(!showNotes)}
+                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-xs py-1 px-2 flex items-center gap-1`}
+                title={showNotes ? 'Hide notes under cards' : 'Show notes under cards (tooltips on hover when off)'}
+              >
+                <MessageSquare size={14} />
+                {showNotes ? 'Hide notes' : 'Show notes'}
+              </button>
+
               {selectedBucket && (
                 <button onClick={createFolder} className="btn btn-secondary">
                   <FolderPlus size={16} /> Create folder
@@ -1712,7 +1772,23 @@ function App() {
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
                     {filteredItems.map((item, index) => (
-                      <div key={index} className={`file-item card overflow-hidden flex flex-col group ${item.isDeleted ? 'opacity-60' : ''}`} data-fullpath={item.fullPath} data-isdir={item.isDir ? 'true' : 'false'}>
+                      <div 
+                        key={index} 
+                        className={`file-item card flex flex-col group relative overflow-visible ${item.isDeleted ? 'opacity-60' : ''}`} 
+                        data-fullpath={item.fullPath} 
+                        data-isdir={item.isDir ? 'true' : 'false'}
+                        onMouseEnter={(e) => {
+                          if (!showNotes && !item.isDir && notes[item.fullPath]) {
+                            setTooltip({ text: notes[item.fullPath], x: e.clientX, y: e.clientY });
+                          }
+                        }}
+                        onMouseMove={(e) => {
+                          if (!showNotes && !item.isDir && notes[item.fullPath]) {
+                            setTooltip({ text: notes[item.fullPath], x: e.clientX, y: e.clientY });
+                          }
+                        }}
+                        onMouseLeave={() => setTooltip(null)}
+                      >
                         {item.isDir ? (
                           <button onClick={() => navigateTo(item.fullPath)} className="flex-1 p-3 flex flex-col">
                             <div className="thumbnail w-full h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
@@ -1837,6 +1913,12 @@ function App() {
                                 <span>{formatSize(item.size)}</span>
                                 {item.lastModified && <span>{format(item.lastModified, 'MMM d')}</span>}
                               </div>
+
+                              {showNotes && notes[item.fullPath] && (
+                                <div className="mt-1 text-sm text-beige-600 italic truncate" title={notes[item.fullPath]}>
+                                  {notes[item.fullPath]}
+                                </div>
+                              )}
                             </div>
                           </>
                         )}
@@ -2084,6 +2166,19 @@ function App() {
               This note is stored as a tag (key: "note") on the object.
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Cursor-following tooltip for notes */}
+      {tooltip && !showNotes && (
+        <div 
+          className="fixed z-[100] pointer-events-none bg-beige-50 border border-beige-200 text-beige-700 text-sm px-3 py-2 rounded-lg shadow-md max-w-[280px] whitespace-pre-wrap break-words"
+          style={{ 
+            left: `${tooltip.x + 12}px`, 
+            top: `${tooltip.y + 12}px` 
+          }}
+        >
+          {tooltip.text}
         </div>
       )}
 
