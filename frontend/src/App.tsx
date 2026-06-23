@@ -787,6 +787,51 @@ function App() {
     loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
   }
 
+  const restoreSelectedItems = async () => {
+    if (selectedItems.size === 0) return
+    const paths = Array.from(selectedItems)
+    const toRestore = items.filter(i => paths.includes(i.fullPath) && !i.isDir && i.isDeleted && i.versionId)
+
+    if (toRestore.length === 0) {
+      clearSelection()
+      return
+    }
+
+    if (!confirm(`Restore ${toRestore.length} item(s)?`)) return
+
+    if (!selectedBucket || !client) {
+      toast.error('No bucket or client')
+      return
+    }
+
+    let count = 0
+    let errors = 0
+    for (const item of toRestore) {
+      try {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: selectedBucket,
+            Key: item.fullPath,
+            VersionId: item.versionId,
+          })
+        )
+        count++
+      } catch (err: any) {
+        console.error('Restore failed for', item.name, err)
+        errors++
+      }
+    }
+
+    if (count > 0) {
+      toast.success(`Restored ${count} item(s)`)
+    }
+    if (errors > 0) {
+      toast.error(`Failed to restore ${errors} item(s)`)
+    }
+    clearSelection()
+    loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+  }
+
   const getPresignedDownloadUrl = async (item: FileItem): Promise<string> => {
     if (!selectedBucket || !client) throw new Error('No client')
     const command = new GetObjectCommand({
@@ -812,6 +857,10 @@ function App() {
     setDragStartPos(pos)
     setDragCurrentPos(pos)
     setIsDragSelecting(true)
+    // Prevent browser text selection during drag-select
+    if (contentRef.current) {
+      contentRef.current.style.userSelect = 'none'
+    }
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -823,6 +872,11 @@ function App() {
   const handleMouseUp = () => {
     if (!isDragSelecting) return
     setIsDragSelecting(false)
+
+    // Re-enable text selection
+    if (contentRef.current) {
+      contentRef.current.style.userSelect = ''
+    }
 
     const start = dragStartPos
     const end = dragCurrentPos
@@ -1369,6 +1423,12 @@ function App() {
                     Download selected
                   </button>
                   <button
+                    onClick={restoreSelectedItems}
+                    className="btn btn-secondary text-xs py-1 px-2 text-green-600 hover:bg-green-50"
+                  >
+                    Restore selected
+                  </button>
+                  <button
                     onClick={deleteSelectedItems}
                     className="btn btn-secondary text-xs py-1 px-2 text-red-600 hover:bg-red-50"
                   >
@@ -1425,7 +1485,7 @@ function App() {
 
           <div
             ref={contentRef}
-            className="flex-1 p-4 sm:p-6 overflow-auto relative"
+            className={`flex-1 p-4 sm:p-6 overflow-auto relative ${isDragSelecting ? 'select-none' : ''}`}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onMouseDown={handleMouseDown}
