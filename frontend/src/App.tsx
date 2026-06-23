@@ -448,6 +448,7 @@ function App() {
       const command = new GetObjectCommand({
         Bucket: selectedBucket,
         Key: item.fullPath,
+        ResponseContentDisposition: `attachment; filename="${item.name}"`,
       })
       const url = await getSignedUrl(client, command, { expiresIn: 60 * 5 })
       const a = document.createElement('a')
@@ -794,21 +795,23 @@ function App() {
                           </button>
                         ) : (
                           <>
-                            <div
-                              className="relative cursor-pointer overflow-hidden"
-                              onClick={() => isImage(item.name) ? openPreview(item) : downloadFile(item)}
-                            >
-                              {isImage(item.name) && creds ? (
-                                <ObjectThumbnail
-                                  bucket={selectedBucket}
-                                  objectName={item.fullPath}
-                                  creds={creds}
-                                />
-                              ) : (
-                                <div className="thumbnail w-full h-40 bg-beige-50">
-                                  <File size={42} className="text-beige-500" />
-                                </div>
-                              )}
+                            <div className="relative overflow-hidden">
+                              <div
+                                className="cursor-pointer"
+                                onClick={() => isImage(item.name) ? openPreview(item) : downloadFile(item)}
+                              >
+                                {isImage(item.name) && creds ? (
+                                  <ObjectThumbnail
+                                    bucket={selectedBucket}
+                                    objectName={item.fullPath}
+                                    creds={creds}
+                                  />
+                                ) : (
+                                  <div className="thumbnail w-full h-40 bg-beige-50">
+                                    <File size={42} className="text-beige-500" />
+                                  </div>
+                                )}
+                              </div>
 
                               {/* Hover action buttons - top right over the photo */}
                               <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all z-10">
