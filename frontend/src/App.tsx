@@ -306,6 +306,7 @@ function App() {
   }, [selectedBucket, client])
 
   const STORAGE_KEY = 'FAMILY_STORAGE_CREDS'
+  const STORAGE_STATE_KEY = 'FAMILY_STORAGE_STATE'
 
   // Restore credentials from sessionStorage on mount
   useEffect(() => {
@@ -319,18 +320,76 @@ function App() {
       setCreds(parsed)
       setClient(s3Client)
 
-      // Try to restore buckets and auto-select first one (like after login)
+      // Try to restore buckets and UI state (bucket + dir + showDeleted) if possible
       listBuckets(s3Client)
         .then((bucketList) => {
           setBuckets(bucketList)
+
+          // Load persisted UI state
+          let targetBucket: string | null = null
+          let targetPrefix = ''
+          let targetShowDeleted = false
+          try {
+            const saved = sessionStorage.getItem(STORAGE_STATE_KEY)
+            if (saved) {
+              const parsedState = JSON.parse(saved)
+              if (parsedState.selectedBucket && bucketList.includes(parsedState.selectedBucket)) {
+                targetBucket = parsedState.selectedBucket
+              }
+              if (typeof parsedState.currentPrefix === 'string') {
+                targetPrefix = parsedState.currentPrefix
+              }
+              if (typeof parsedState.showDeleted === 'boolean') {
+                targetShowDeleted = parsedState.showDeleted
+              }
+            }
+          } catch {}
+
           if (bucketList.length > 0) {
-            selectBucket(bucketList[0], s3Client, parsed).catch(() => {})
+            const bucketToUse = targetBucket || bucketList[0]
+            const prefixToUse = (targetBucket && bucketToUse === targetBucket) ? targetPrefix : ''
+            // Set showDeleted first so the UI toggle reflects restored state
+            if (targetShowDeleted !== showDeleted) {
+              setShowDeleted(targetShowDeleted)
+            }
+            setSelectedBucket(bucketToUse)
+            setCurrentPrefix(prefixToUse)
+            setSearch('')
+            clearSelection()
+            // Load directly with the target prefix and showDeleted
+            loadObjects(bucketToUse, prefixToUse, s3Client, parsed, targetShowDeleted).catch(() => {})
+
+            if (prefixToUse) {
+              // Auto-expand the folder tree to the restored prefix
+              setExpandedPrefixes(prev => {
+                const next = new Set(prev)
+                let p = ''
+                prefixToUse.split('/').filter(Boolean).forEach(part => {
+                  p += part + '/'
+                  next.add(p)
+                })
+                return next
+              })
+
+              // Preload children for the path so the sidebar tree shows correctly after refresh
+              let p = ''
+              prefixToUse.split('/').filter(Boolean).forEach(async (part) => {
+                p += part + '/'
+                try {
+                  const { prefixes } = await listObjectsWithPrefix(s3Client, bucketToUse, p, false)
+                  setPrefixChildren(prev => ({ ...prev, [p]: prefixes }))
+                } catch (e) {
+                  console.error('Failed to load prefix children on restore for', p, e)
+                }
+              })
+            }
           }
         })
         .catch((err) => {
           console.error('Failed to restore MinIO session:', err)
           // Stored credentials are no longer valid
           sessionStorage.removeItem(STORAGE_KEY)
+          sessionStorage.removeItem(STORAGE_STATE_KEY)
           setCreds(null)
           setClient(null)
           setBuckets([])
@@ -340,6 +399,20 @@ function App() {
       sessionStorage.removeItem(STORAGE_KEY)
     }
   }, []) // run only once on mount
+
+  // Persist UI state (bucket/dir/show-deleted) so refresh keeps the same view
+  // Only persist if we actually have a selected bucket (avoid clobbering saved state
+  // during the brief moment after login/restore when selectedBucket is still unset)
+  useEffect(() => {
+    if (isLoggedIn && selectedBucket) {
+      const state = {
+        selectedBucket,
+        currentPrefix,
+        showDeleted,
+      }
+      sessionStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state))
+    }
+  }, [selectedBucket, currentPrefix, showDeleted, isLoggedIn])
 
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
@@ -385,6 +458,7 @@ function App() {
 
   const disconnect = () => {
     sessionStorage.removeItem(STORAGE_KEY)
+    sessionStorage.removeItem(STORAGE_STATE_KEY)
     setCreds(null)
     setClient(null)
     setBuckets([])
