@@ -258,6 +258,7 @@ function App() {
   const [items, setItems] = useState<FileItem[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
+  const [searchType, setSearchType] = useState<'name' | 'note'>('name')
   const [showDeleted, setShowDeleted] = useState(false)
   const [showNotes, setShowNotes] = useState(false)
   const [notes, setNotes] = useState<Record<string, string>>({})
@@ -472,6 +473,7 @@ function App() {
       setItems([])
       setCurrentPrefix('')
       setSearch('')
+      setSearchType('name')
       setShowNotes(false)
       setNotes({})
 
@@ -501,6 +503,7 @@ function App() {
     setItems([])
     setCurrentPrefix('')
     setSearch('')
+    setSearchType('name')
     setPreviewItem(null)
     setPreviewUrl(null)
     clearSelection()
@@ -577,12 +580,12 @@ function App() {
     }
   }, [showDeleted])
 
-  // Always load notes for current items (for hover tooltips and display)
+  // Load notes for current items when needed for display or note search
   useEffect(() => {
-    if (selectedBucket && client && items.length > 0) {
+    if (selectedBucket && client && items.length > 0 && (showNotes || searchType === 'note')) {
       loadNotesForItems(items)
     }
-  }, [items, selectedBucket, client])
+  }, [showNotes, searchType, items, selectedBucket, client])
 
   const navigateTo = (prefix: string) => {
     if (!selectedBucket || !client || !creds) return
@@ -627,15 +630,22 @@ function App() {
 
   const filteredItems = useMemo(() => {
     let result = items
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      result = items.filter(i => i.name.toLowerCase().includes(q))
+    const q = search.trim().toLowerCase()
+    if (q) {
+      if (searchType === 'name') {
+        result = items.filter(i => i.name.toLowerCase().includes(q))
+      } else if (searchType === 'note') {
+        result = items.filter(i => {
+          const note = notes[i.fullPath] || ''
+          return note.toLowerCase().includes(q)
+        })
+      }
     }
     return [...result].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
     })
-  }, [items, search])
+  }, [items, search, searchType, notes])
 
   const contentRef = useRef<HTMLDivElement>(null)
 
@@ -1621,12 +1631,20 @@ function App() {
             </div>
 
             <div className="flex items-center gap-2">
+              <select
+                value={searchType}
+                onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
+                className="input text-xs py-1 px-1 w-20"
+              >
+                <option value="name">Name</option>
+                <option value="note">Note</option>
+              </select>
               <div className="relative w-48 sm:w-64">
                 <input
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search files..."
+                  placeholder={searchType === 'name' ? 'Search files...' : 'Search notes...'}
                   className="input pl-9 py-1.5 text-sm"
                 />
                 <Search size={15} className="absolute left-3 top-2.5 text-beige-600" />
