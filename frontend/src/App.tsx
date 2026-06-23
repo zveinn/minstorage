@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   S3Client,
   ListBucketsCommand,
@@ -10,7 +10,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X
+  LogOut, Search, ChevronRight, Home, X, Check
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -186,6 +186,11 @@ function App() {
   const [search, setSearch] = useState('')
   const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([])
 
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
+  const [isDragSelecting, setIsDragSelecting] = useState(false)
+  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 })
+  const [dragCurrentPos, setDragCurrentPos] = useState({ x: 0, y: 0 })
+
   const [previewItem, setPreviewItem] = useState<FileItem | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
@@ -302,6 +307,7 @@ function App() {
     setUploadQueue([])
     setPreviewItem(null)
     setPreviewUrl(null)
+    clearSelection()
     toast.info('Disconnected')
   }
 
@@ -317,6 +323,7 @@ function App() {
     setSelectedBucket(bucket)
     setCurrentPrefix('')
     setSearch('')
+    clearSelection()
     await loadObjects(bucket, '', activeClient, activeCreds)
   }, [client, creds])
 
@@ -364,6 +371,7 @@ function App() {
     if (!selectedBucket || !client || !creds) return
     setCurrentPrefix(prefix)
     setSearch('')
+    clearSelection()
     loadObjects(selectedBucket, prefix, client, creds)
   }
 
@@ -394,6 +402,152 @@ function App() {
       return a.name.localeCompare(b.name)
     })
   }, [items, search])
+
+  const contentRef = useRef<HTMLDivElement>(null)
+
+  const isInSelectMode = selectedItems.size > 0
+
+  const toggleSelect = (fullPath: string) => {
+    setSelectedItems(prev => {
+      const next = new Set(prev)
+      if (next.has(fullPath)) {
+        next.delete(fullPath)
+      } else {
+        next.add(fullPath)
+      }
+      return next
+    })
+  }
+
+  const clearSelection = () => {
+    setSelectedItems(new Set())
+  }
+
+  const downloadSelectedItems = async () => {
+    if (selectedItems.size === 0) return
+    const paths = Array.from(selectedItems)
+    const toDownload = items.filter(i => paths.includes(i.fullPath) && !i.isDir)
+
+    if (toDownload.length === 0) {
+      clearSelection()
+      return
+    }
+
+    // Try modern directory picker for choosing download location
+    const hasDirectoryPicker = 'showDirectoryPicker' in window
+    if (hasDirectoryPicker) {
+      try {
+        const dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+        let count = 0
+        for (const item of toDownload) {
+          try {
+            const url = await getPresignedDownloadUrl(item)
+            const res = await fetch(url)
+            const blob = await res.blob()
+            const fileHandle = await dirHandle.getFileHandle(item.name, { create: true })
+            const writable = await fileHandle.createWritable()
+            await writable.write(blob)
+            await writable.close()
+            count++
+          } catch (e) {
+            console.error('Failed to save', item.name, e)
+          }
+        }
+        if (count > 0) {
+          toast.success(`Downloaded ${count} file(s) to the selected folder`)
+        }
+        clearSelection()
+        return
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          // user cancelled the picker
+          return
+        }
+        console.log('Directory picker failed or not available in this context, falling back to default downloads')
+      }
+    }
+
+    // Fallback: use normal download (browser default location)
+    if (toDownload.length > 1 && !hasDirectoryPicker) {
+      toast.info('Location picker not available in this browser/context. Files will go to your default Downloads folder.')
+    }
+
+    for (const item of toDownload) {
+      await downloadFile(item)
+      await new Promise(r => setTimeout(r, 150))
+    }
+    clearSelection()
+  }
+
+  const getPresignedDownloadUrl = async (item: FileItem): Promise<string> => {
+    if (!selectedBucket || !client) throw new Error('No client')
+    const command = new GetObjectCommand({
+      Bucket: selectedBucket,
+      Key: item.fullPath,
+      ResponseContentDisposition: `attachment; filename="${item.name}"`,
+    })
+    return getSignedUrl(client, command, { expiresIn: 60 * 5 })
+  }
+
+  const getRelativePosition = (e: React.MouseEvent) => {
+    const rect = contentRef.current?.getBoundingClientRect()
+    if (!rect) return { x: 0, y: 0 }
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    }
+  }
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    const pos = getRelativePosition(e)
+    setDragStartPos(pos)
+    setDragCurrentPos(pos)
+    setIsDragSelecting(true)
+  }
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragSelecting) return
+    const pos = getRelativePosition(e)
+    setDragCurrentPos(pos)
+  }
+
+  const handleMouseUp = () => {
+    if (!isDragSelecting) return
+    setIsDragSelecting(false)
+
+    const start = dragStartPos
+    const end = dragCurrentPos
+    const left = Math.min(start.x, end.x)
+    const top = Math.min(start.y, end.y)
+    const right = Math.max(start.x, end.x)
+    const bottom = Math.max(start.y, end.y)
+
+    if (Math.abs(right - left) < 8 && Math.abs(bottom - top) < 8) {
+      return
+    }
+
+    const container = contentRef.current
+    if (!container) return
+
+    const cards = container.querySelectorAll('[data-fullpath]') as NodeListOf<HTMLElement>
+    const next = new Set(selectedItems)
+
+    cards.forEach((card) => {
+      const fullPath = card.dataset.fullpath
+      if (!fullPath || card.dataset.isdir === 'true') return
+      const cRect = card.getBoundingClientRect()
+      const cLeft = cRect.left - container.getBoundingClientRect().left
+      const cTop = cRect.top - container.getBoundingClientRect().top
+      const cRight = cLeft + cRect.width
+      const cBottom = cTop + cRect.height
+      if (cLeft < right && cRight > left && cTop < bottom && cBottom > top) {
+        next.add(fullPath)
+      }
+    })
+
+    setSelectedItems(next)
+  }
 
   const uploadFiles = async (files: FileList | File[]) => {
     if (!selectedBucket || !client || !creds) {
@@ -445,18 +599,43 @@ function App() {
     if (!selectedBucket || !client) return
 
     try {
-      const command = new GetObjectCommand({
-        Bucket: selectedBucket,
-        Key: item.fullPath,
-        ResponseContentDisposition: `attachment; filename="${item.name}"`,
-      })
-      const url = await getSignedUrl(client, command, { expiresIn: 60 * 5 })
+      const url = await getPresignedDownloadUrl(item)
+      const res = await fetch(url)
+      const blob = await res.blob()
+
+      // Try modern save location picker (only works on HTTPS or localhost in Chromium browsers)
+      const canUseFilePicker = 'showSaveFilePicker' in window
+      if (canUseFilePicker) {
+        try {
+          const fileHandle = await (window as any).showSaveFilePicker({
+            suggestedName: item.name,
+          })
+          const writable = await fileHandle.createWritable()
+          await writable.write(blob)
+          await writable.close()
+          return
+        } catch (pickerErr: any) {
+          if (pickerErr.name === 'AbortError') {
+            return // user cancelled
+          }
+          // API not available in this context (e.g. accessed via IP over HTTP) → fall through
+        }
+      }
+
+      // Standard browser download (goes to default Downloads folder, no location prompt)
       const a = document.createElement('a')
-      a.href = url
+      a.href = URL.createObjectURL(blob)
       a.download = item.name
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+
+      // Optional one-time hint if picker was not available
+      if (!canUseFilePicker && !sessionStorage.getItem('downloadHintShown')) {
+        sessionStorage.setItem('downloadHintShown', 'true')
+        toast.info('Downloads go to your browser\'s default folder. For a save dialog, access via localhost or HTTPS.')
+      }
     } catch (err: any) {
       toast.error('Download failed: ' + err.message)
     }
@@ -717,6 +896,23 @@ function App() {
                 <Search size={15} className="absolute left-3 top-2.5 text-beige-600" />
               </div>
 
+              {isInSelectMode && (
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                    {selectedItems.size} selected
+                  </span>
+                  <button
+                    onClick={downloadSelectedItems}
+                    className="btn btn-primary text-xs py-1 px-2"
+                  >
+                    Download selected
+                  </button>
+                  <button onClick={clearSelection} className="btn btn-secondary text-xs py-1 px-2">
+                    Clear
+                  </button>
+                </div>
+              )}
+
               <label className="btn btn-primary cursor-pointer">
                 <UploadIcon size={16} />
                 Upload
@@ -738,9 +934,14 @@ function App() {
           </div>
 
           <div
-            className="flex-1 p-4 sm:p-6 overflow-auto"
+            ref={contentRef}
+            className="flex-1 p-4 sm:p-6 overflow-auto relative"
             onDrop={handleDrop}
             onDragOver={handleDragOver}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
           >
             {!selectedBucket ? (
               <div className="h-[60vh] flex items-center justify-center text-center">
@@ -782,7 +983,7 @@ function App() {
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
                     {filteredItems.map((item, index) => (
-                      <div key={index} className="file-item card overflow-hidden flex flex-col group">
+                      <div key={index} className="file-item card overflow-hidden flex flex-col group" data-fullpath={item.fullPath} data-isdir={item.isDir ? 'true' : 'false'}>
                         {item.isDir ? (
                           <button onClick={() => navigateTo(item.fullPath)} className="flex-1 p-3 flex flex-col">
                             <div className="thumbnail w-full h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
@@ -798,8 +999,33 @@ function App() {
                             <div className="relative overflow-hidden">
                               <div
                                 className="cursor-pointer"
-                                onClick={() => isImage(item.name) ? openPreview(item) : downloadFile(item)}
+                                onClick={() => {
+                                  if (isInSelectMode) {
+                                    toggleSelect(item.fullPath)
+                                  } else {
+                                    isImage(item.name) ? openPreview(item) : downloadFile(item)
+                                  }
+                                }}
                               >
+                                {/* Select icon top-left */}
+                                <div
+                                  className="absolute top-2 left-2 z-30"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    toggleSelect(item.fullPath)
+                                  }}
+                                >
+                                  <div
+                                    className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                                      selectedItems.has(item.fullPath)
+                                        ? 'bg-blue-500 border-blue-500'
+                                        : 'bg-white/80 border-gray-300 hover:border-blue-400'
+                                    }`}
+                                  >
+                                    {selectedItems.has(item.fullPath) && <Check size={10} className="text-white" />}
+                                  </div>
+                                </div>
+
                                 {isImage(item.name) && creds ? (
                                   <ObjectThumbnail
                                     bucket={selectedBucket}
@@ -835,7 +1061,13 @@ function App() {
                             {/* Compact bottom info: only name + date + size */}
                             <div className="p-2.5">
                               <div
-                                onClick={() => isImage(item.name) ? openPreview(item) : downloadFile(item)}
+                                onClick={() => {
+                                  if (isInSelectMode) {
+                                    toggleSelect(item.fullPath)
+                                  } else {
+                                    isImage(item.name) ? openPreview(item) : downloadFile(item)
+                                  }
+                                }}
                                 className="font-medium text-sm leading-tight truncate cursor-pointer hover:underline mb-1"
                               >
                                 {item.name}
@@ -851,6 +1083,19 @@ function App() {
                       </div>
                     ))}
                   </div>
+                )}
+
+                {/* Drag selection overlay */}
+                {isDragSelecting && (
+                  <div
+                    className="absolute border-2 border-blue-500 bg-blue-500/20 pointer-events-none z-50"
+                    style={{
+                      left: Math.min(dragStartPos.x, dragCurrentPos.x),
+                      top: Math.min(dragStartPos.y, dragCurrentPos.y),
+                      width: Math.abs(dragStartPos.x - dragCurrentPos.x),
+                      height: Math.abs(dragStartPos.y - dragCurrentPos.y),
+                    }}
+                  />
                 )}
               </>
             )}
