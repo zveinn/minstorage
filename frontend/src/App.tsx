@@ -1771,7 +1771,7 @@ function App() {
       {/* Share Link Modal */}
       {shareModalOpen && shareItem && (
         <div className="modal" onClick={closeShareModal}>
-          <div className="modal-content w-full max-w-md" onClick={e => e.stopPropagation()}>
+          <div className="modal-content w-full max-w-[500px] mx-auto" onClick={e => e.stopPropagation()}>
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-3 border-b border-beige-200 bg-beige-50">
               <div className="font-medium">Share download link</div>
