@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
+import { v4 as uuidv4 } from 'uuid'
 import './App.css'
 
 // Types
@@ -100,6 +101,24 @@ async function listObjectsWithPrefix(
 async function listBuckets(client: S3Client): Promise<string[]> {
   const response = await client.send(new ListBucketsCommand({}))
   return (response.Buckets || []).map((b) => b.Name!).filter(Boolean).sort()
+}
+
+/** Adds a random UUID before the file extension (or at the end if no extension). */
+function makeStorageName(originalName: string): string {
+  const uuid = uuidv4()
+  const lastDot = originalName.lastIndexOf('.')
+  if (lastDot === -1) {
+    return `${originalName}-${uuid}`
+  }
+  const base = originalName.substring(0, lastDot)
+  const ext = originalName.substring(lastDot)
+  return `${base}-${uuid}${ext}`
+}
+
+/** Removes a trailing -uuid (before extension or at end) for display purposes. */
+function getDisplayName(storageName: string): string {
+  // Matches -xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx before .ext or at end
+  return storageName.replace(/-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=\.|$)/i, '')
 }
 
 function ObjectThumbnail({
@@ -350,7 +369,7 @@ function App() {
         ...files
           .filter(f => f.name !== prefix)
           .map(f => ({
-            name: f.name.replace(prefix, ''),
+            name: getDisplayName(f.name.replace(prefix, '')),
             fullPath: f.name,
             size: f.size,
             lastModified: f.lastModified,
@@ -562,7 +581,8 @@ function App() {
     setUploadQueue(prev => [...prev, ...newUploads])
 
     for (const file of fileArray) {
-      const objectName = currentPrefix + file.name
+      const storageName = makeStorageName(file.name)
+      const objectName = currentPrefix + storageName
 
       try {
         setUploadQueue(q => q.map(u => u.name === file.name ? { ...u, progress: 10 } : u))
