@@ -1770,7 +1770,7 @@ function App() {
                     {search ? 'No matching files' : 'This folder is empty'}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4 items-start">
                     {filteredItems.map((item, index) => (
                       <div 
                         key={index} 
@@ -1915,7 +1915,7 @@ function App() {
                               </div>
 
                               {showNotes && notes[item.fullPath] && (
-                                <div className="mt-1 text-sm text-black truncate" title={notes[item.fullPath]}>
+                                <div className="mt-1 text-sm text-black break-words" title={notes[item.fullPath]}>
                                   {notes[item.fullPath]}
                                 </div>
                               )}
