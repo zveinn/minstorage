@@ -14,11 +14,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disintegration/imaging"
+	"github.com/google/uuid"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	minio "github.com/minio/minio-go/v7"
@@ -39,7 +42,102 @@ const (
 
 var cacheDir string
 
+// In-memory one-time signup tokens (UUID -> expiry)
+var (
+	signupTokens = make(map[string]time.Time)
+	signupMu     sync.Mutex
+)
+
+func getSignupTokensPath() string {
+	dir := cacheDir
+	if dir == "" {
+		dir = os.Getenv("PREVIEW_CACHE_DIR")
+		if dir == "" {
+			dir = defaultCacheDir
+		}
+	}
+	_ = os.MkdirAll(dir, 0755)
+	return filepath.Join(dir, "signup-tokens.json")
+}
+
+func loadSignupTokens() {
+	path := getSignupTokensPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // file may not exist yet
+	}
+	var onDisk map[string]time.Time
+	if err := json.Unmarshal(data, &onDisk); err != nil {
+		log.Printf("[signup] warning: could not parse tokens file: %v", err)
+		return
+	}
+
+	log.Printf("[signup] loaded %d token(s) from %s", len(onDisk), path)
+
+	signupMu.Lock()
+	defer signupMu.Unlock()
+
+	now := time.Now()
+	// Merge non-expired from disk into memory
+	for k, exp := range onDisk {
+		if !now.After(exp) {
+			signupTokens[k] = exp
+		}
+	}
+	// Prune expired from memory
+	for k, exp := range signupTokens {
+		if now.After(exp) {
+			delete(signupTokens, k)
+		}
+	}
+}
+
+func saveSignupTokens() {
+	signupMu.Lock()
+	toSave := make(map[string]time.Time)
+	now := time.Now()
+	for k, exp := range signupTokens {
+		if !now.After(exp) {
+			toSave[k] = exp
+		}
+	}
+	signupMu.Unlock()
+
+	path := getSignupTokensPath()
+	data, err := json.MarshalIndent(toSave, "", "  ")
+	if err != nil {
+		log.Printf("[signup] warning: could not marshal tokens: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		log.Printf("[signup] warning: could not write tokens file: %v", err)
+	}
+}
+
 func main() {
+	// Support "signup" subcommand. We scan for the token so that global flags
+	// can appear before or after "signup" (e.g. ./backend --signupHostPort x signup --minio y)
+	hasSignup := false
+	for _, a := range os.Args {
+		if a == "signup" {
+			hasSignup = true
+			break
+		}
+	}
+	if hasSignup {
+		// Build arg list with the "signup" token removed so flag.Parse sees all --flags
+		cleanArgs := []string{os.Args[0]}
+		for _, a := range os.Args[1:] {
+			if a != "signup" {
+				cleanArgs = append(cleanArgs, a)
+			}
+		}
+		os.Args = cleanArgs
+		flag.Parse()
+		runSignupCommand()
+		return
+	}
+
 	flag.Parse()
 
 	cacheDir = os.Getenv("PREVIEW_CACHE_DIR")
@@ -50,6 +148,11 @@ func main() {
 		log.Fatalf("failed to create cache dir: %v", err)
 	}
 
+	// Load any persisted signup tokens (from previous `./backend signup` runs)
+	loadSignupTokens()
+	saveSignupTokens() // prune any expired ones on startup
+	log.Printf("[signup] loaded signup tokens on startup (will re-load on demand for requests)")
+
 	// Also ensure the embedded static dir exists in source (for dev)
 	_ = os.MkdirAll("static", 0755)
 
@@ -59,6 +162,10 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	// Public one-time signup routes (token-protected self signup, no auth headers required)
+	r.Get("/signup/{token}", signupFormHandler)
+	r.Post("/signup/{token}", signupSubmitHandler)
+
 	// API routes (with CORS for the custom X-Minio headers)
 	r.Group(func(r chi.Router) {
 		r.Use(corsMiddleware)
@@ -67,7 +174,6 @@ func main() {
 			w.Write([]byte("ok"))
 		})
 		r.Get("/preview", previewHandler)
-		r.Post("/admin/create-user", adminCreateUserHandler)
 	})
 
 	// Serve the embedded React frontend (SPA)
@@ -86,13 +192,18 @@ func main() {
 		effectiveMinio = "(per-request from client)"
 	}
 
+	effectiveSignup := resolveSignupHostPort()
+	if effectiveSignup == "" {
+		effectiveSignup = effectiveMinio
+	}
+
 	ak, sk := resolveMinioCredentials()
 	backendCreds := "no"
 	if ak != "" && sk != "" {
 		backendCreds = "yes"
 	}
 
-	log.Printf("Family Storage listening on %s (preview cache: %s, minio: %s, backend-creds: %s)", addr, cacheDir, effectiveMinio, backendCreds)
+	log.Printf("Family Storage listening on %s (preview cache: %s, minio: %s, signup: %s, backend-creds: %s)", addr, cacheDir, effectiveMinio, effectiveSignup, backendCreds)
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatal(err)
 	}
@@ -102,6 +213,7 @@ var listenAddress string
 var minioAddress string
 var minioUser string
 var minioPass string
+var signupHostPort string
 
 func init() {
 	flag.StringVar(&listenAddress, "address", "", "Address to listen on (e.g. :8080, 0.0.0.0:8080, 127.0.0.1:9000)")
@@ -115,6 +227,8 @@ func init() {
 
 	flag.StringVar(&minioPass, "pass", "", "MinIO secret key for backend operations")
 	flag.StringVar(&minioPass, "p", "", "Shorthand for --pass")
+
+	flag.StringVar(&signupHostPort, "signupHostPort", "", "Host:port to use in generated signup URLs (e.g. 192.168.1.35:8080). Falls back to --minio address if unset.")
 }
 
 func resolveListenAddress() string {
@@ -159,6 +273,17 @@ func resolveMinioAddress() string {
 		return normalizeMinioAddress(addr)
 	}
 	return ""
+}
+
+func resolveSignupHostPort() string {
+	if signupHostPort != "" {
+		return normalizeMinioAddress(signupHostPort)
+	}
+	if addr := os.Getenv("SIGNUP_HOST_PORT"); addr != "" {
+		return normalizeMinioAddress(addr)
+	}
+	// Fall back to the minio address (for backward compat)
+	return resolveMinioAddress()
 }
 
 func resolveMinioCredentials() (accessKey, secretKey string) {
@@ -428,132 +553,146 @@ func spaFileServer(fsys fs.FS) http.HandlerFunc {
 	}
 }
 
-// adminCreateUserHandler creates a new MinIO user with their own bucket (versioned) + access to "shared"
-func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 
-	var req struct {
-		Username        string `json:"username"`
-		Password        string `json:"password"`
-		ConfirmPassword string `json:"confirmPassword"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
+// --- New signup (one-time link) implementation ---
 
-	if req.Username == "" || req.Password == "" || req.Password != req.ConfirmPassword {
-		http.Error(w, "username and matching passwords are required", http.StatusBadRequest)
-		return
-	}
-
-	// Resolve MinIO address and credentials for backend use.
-	// Prefer --minio / --user / --pass (or MINIO_* env) so the backend dials an address
-	// it can actually reach (e.g. 127.0.0.1 or internal name), not the browser's view of the endpoint.
-	backendMinioAddr := resolveMinioAddress()
-	usingBackendMinio := backendMinioAddr != ""
-
-	minioEndpoint := backendMinioAddr
-	if minioEndpoint == "" {
-		minioEndpoint = getHeader(r, "X-Minio-Endpoint", "")
-	}
-
-	accessKey, secretKey := resolveMinioCredentials()
-	usingBackendCreds := accessKey != "" && secretKey != ""
-
-	if !usingBackendCreds && !usingBackendMinio {
-		// Legacy fallback only when no backend MinIO config at all
-		accessKey = getHeader(r, "X-Minio-Access-Key", "")
-		secretKey = getHeader(r, "X-Minio-Secret-Key", "")
-	}
-
-	useSSL := strings.ToLower(getHeader(r, "X-Minio-Use-SSL", "false")) == "true"
-
-	log.Printf("[admin-create-user] request: username=%q endpoint=%q useSSL=%v usingBackendMinio=%v usingBackendCreds=%v",
-		req.Username, minioEndpoint, useSSL, usingBackendMinio, usingBackendCreds)
-
-	if minioEndpoint == "" || accessKey == "" || secretKey == "" {
-		log.Printf("[admin-create-user] error: missing minio endpoint or credentials")
-		http.Error(w, "missing minio admin credentials (provide via headers or backend --minio/--user/--pass)", http.StatusUnauthorized)
-		return
-	}
-
-	minioClient, err := newMinioClient(minioEndpoint, accessKey, secretKey, useSSL)
-	if err != nil {
-		log.Printf("[admin-create-user] error: failed to create minio client for %s: %v", minioEndpoint, err)
-		http.Error(w, "failed to connect to minio: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	log.Printf("[admin-create-user] minio client created for endpoint=%s", minioEndpoint)
-
-	mdm, err := newMadminClient(minioEndpoint, accessKey, secretKey, useSSL)
-	if err != nil {
-		log.Printf("[admin-create-user] error: failed to create madmin client for %s: %v", minioEndpoint, err)
-		http.Error(w, "failed to connect to minio admin: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	log.Printf("[admin-create-user] madmin client created for endpoint=%s", minioEndpoint)
-
-	// 1. Fail if user's bucket already exists
-	log.Printf("[admin-create-user] checking if bucket %q exists...", req.Username)
-	t := time.Now()
-	exists, err := minioClient.BucketExists(ctx, req.Username)
-	log.Printf("[admin-create-user] BucketExists(%q) took %v, exists=%v, err=%v", req.Username, time.Since(t), exists, err)
-	if err != nil {
-		http.Error(w, "failed to check bucket existence: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("[admin-create-user] bucket %q exists=%v", req.Username, exists)
-	if exists {
-		http.Error(w, "bucket already exists", http.StatusConflict)
-		return
-	}
-
-	// 2. Create user's bucket + enable versioning
-	log.Printf("[admin-create-user] creating bucket %q", req.Username)
-	t = time.Now()
-	err = minioClient.MakeBucket(ctx, req.Username, minio.MakeBucketOptions{})
-	log.Printf("[admin-create-user] MakeBucket(%q) took %v, err=%v", req.Username, time.Since(t), err)
-	if err != nil {
-		http.Error(w, "failed to create bucket: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("[admin-create-user] bucket %q created, enabling versioning", req.Username)
-	t = time.Now()
-	err = minioClient.SetBucketVersioning(ctx, req.Username, minio.BucketVersioningConfiguration{Status: "Enabled"})
-	log.Printf("[admin-create-user] SetBucketVersioning(%q) took %v, err=%v", req.Username, time.Since(t), err)
-	if err != nil {
-		log.Printf("[admin-create-user] warning: could not enable versioning on %s: %v", req.Username, err)
-	}
-
-	// 3. Ensure "shared" bucket exists + versioning
-	log.Printf("[admin-create-user] ensuring shared bucket exists and is versioned")
-	t = time.Now()
-	sharedExists, err := minioClient.BucketExists(ctx, "shared")
-	log.Printf("[admin-create-user] BucketExists(shared) took %v, exists=%v, err=%v", time.Since(t), sharedExists, err)
-	if err != nil {
-		http.Error(w, "failed to check shared bucket: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !sharedExists {
-		log.Printf("[admin-create-user] creating shared bucket")
-		t = time.Now()
-		err = minioClient.MakeBucket(ctx, "shared", minio.MakeBucketOptions{})
-		log.Printf("[admin-create-user] MakeBucket(shared) took %v, err=%v", time.Since(t), err)
-		if err != nil {
-			http.Error(w, "failed to create shared bucket: "+err.Error(), http.StatusInternalServerError)
-			return
+func runSignupCommand() {
+	signupVal := signupHostPort
+	if signupVal == "" {
+		if v := os.Getenv("SIGNUP_HOST_PORT"); v != "" {
+			signupVal = v
 		}
 	}
-	t = time.Now()
-	err = minioClient.SetBucketVersioning(ctx, "shared", minio.BucketVersioningConfiguration{Status: "Enabled"})
-	log.Printf("[admin-create-user] SetBucketVersioning(shared) took %v, err=%v", time.Since(t), err)
-	if err != nil {
-		log.Printf("[admin-create-user] warning: could not enable versioning on shared: %v", err)
+
+	base := resolveSignupHostPort()
+	if base == "" {
+		base = "127.0.0.1:7000"
 	}
 
-	// 4. Create policy that gives full access only to own bucket + shared
-	policyName := "policy-" + req.Username
+	token := uuid.NewString()
+	expiry := time.Now().Add(24 * time.Hour)
+
+	loadSignupTokens()
+	signupMu.Lock()
+	signupTokens[token] = expiry
+	signupMu.Unlock()
+	saveSignupTokens()
+	log.Printf("[signup] stored token %s (valid 24h) in %s", token, getSignupTokensPath())
+
+	signupURL := fmt.Sprintf("http://%s/signup/%s", base, token)
+
+	fmt.Println("One-time signup URL created (valid once):")
+	fmt.Println(signupURL)
+	fmt.Println()
+	if signupVal != "" {
+		fmt.Printf("(using --signupHostPort / SIGNUP_HOST_PORT = %s)\n", signupVal)
+	} else if minioAddress != "" {
+		fmt.Printf("(no --signupHostPort set; fell back to --minio = %s)\n", minioAddress)
+	} else {
+		fmt.Println("(no --signupHostPort or --minio set; using default)")
+	}
+	fmt.Println()
+	fmt.Println("The user can visit this URL to enter a username and password.")
+	fmt.Println("After successful signup the token is consumed.")
+}
+
+// isValidSignupToken returns whether the token is still valid (and not expired).
+func isValidSignupToken(token string) bool {
+	loadSignupTokens()
+
+	signupMu.Lock()
+	exp, ok := signupTokens[token]
+	expired := ok && time.Now().After(exp)
+	if expired {
+		delete(signupTokens, token)
+	}
+	signupMu.Unlock()
+
+	if expired {
+		saveSignupTokens()
+		return false
+	}
+	if !ok {
+		log.Printf("[signup] token %s NOT FOUND (file checked: %s)", token, getSignupTokensPath())
+	}
+	return ok
+}
+
+// consumeSignupToken removes a token after successful use.
+func consumeSignupToken(token string) {
+	signupMu.Lock()
+	delete(signupTokens, token)
+	signupMu.Unlock()
+	saveSignupTokens()
+}
+
+// createUserAndBucket performs the core work: check/create per-user bucket + versioning,
+// ensure shared bucket + versioning, create limited policy, create user, attach policy.
+// Always uses backend --minio/--user/--pass credentials.
+func createUserAndBucket(username, password string) error {
+	if username == "" || password == "" {
+		return fmt.Errorf("username and password are required")
+	}
+
+	endpoint := resolveMinioAddress()
+	if endpoint == "" {
+		return fmt.Errorf("minio address not configured (use --minio)")
+	}
+	accessKey, secretKey := resolveMinioCredentials()
+	if accessKey == "" || secretKey == "" {
+		return fmt.Errorf("minio admin credentials not configured (use --user/--pass)")
+	}
+	useSSL := false // default for local setups; extend with env/flag if needed
+
+	log.Printf("[signup] creating clients for endpoint=%s user=%q", endpoint, username)
+
+	minioClient, err := newMinioClient(endpoint, accessKey, secretKey, useSSL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to minio: %w", err)
+	}
+	mdm, err := newMadminClient(endpoint, accessKey, secretKey, useSSL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to madmin: %w", err)
+	}
+
+	ctx := context.Background()
+
+	// 1. Fail if user's bucket already exists
+	log.Printf("[signup] checking bucket %q", username)
+	exists, err := minioClient.BucketExists(ctx, username)
+	if err != nil {
+		return fmt.Errorf("failed to check bucket: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("bucket %q already exists", username)
+	}
+
+	// 2. Create bucket + versioning
+	log.Printf("[signup] creating bucket %q", username)
+	if err := minioClient.MakeBucket(ctx, username, minio.MakeBucketOptions{}); err != nil {
+		return fmt.Errorf("failed to create bucket: %w", err)
+	}
+	if err := minioClient.SetBucketVersioning(ctx, username, minio.BucketVersioningConfiguration{Status: "Enabled"}); err != nil {
+		log.Printf("[signup] warning: could not enable versioning on %s: %v", username, err)
+	}
+
+	// 3. Shared bucket
+	log.Printf("[signup] ensuring shared bucket")
+	sharedExists, err := minioClient.BucketExists(ctx, "shared")
+	if err != nil {
+		return fmt.Errorf("failed to check shared: %w", err)
+	}
+	if !sharedExists {
+		if err := minioClient.MakeBucket(ctx, "shared", minio.MakeBucketOptions{}); err != nil {
+			return fmt.Errorf("failed to create shared bucket: %w", err)
+		}
+	}
+	if err := minioClient.SetBucketVersioning(ctx, "shared", minio.BucketVersioningConfiguration{Status: "Enabled"}); err != nil {
+		log.Printf("[signup] warning: could not enable versioning on shared: %v", err)
+	}
+
+	// 4. Policy limited to user's bucket + shared
+	policyName := "policy-" + username
 	policyDoc := fmt.Sprintf(`{
 		"Version": "2012-10-17",
 		"Statement": [
@@ -568,42 +707,117 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 				]
 			}
 		]
-	}`, req.Username, req.Username)
+	}`, username, username)
 
-	log.Printf("[admin-create-user] creating policy %q", policyName)
-	t = time.Now()
-	err = mdm.AddCannedPolicy(ctx, policyName, []byte(policyDoc))
-	log.Printf("[admin-create-user] AddCannedPolicy(%q) took %v, err=%v", policyName, time.Since(t), err)
-	if err != nil {
-		http.Error(w, "failed to create policy: "+err.Error(), http.StatusInternalServerError)
+	log.Printf("[signup] creating policy %q", policyName)
+	if err := mdm.AddCannedPolicy(ctx, policyName, []byte(policyDoc)); err != nil {
+		return fmt.Errorf("failed to create policy: %w", err)
+	}
+
+	// 5 + 6. User + attach
+	log.Printf("[signup] creating user %q", username)
+	if err := mdm.AddUser(ctx, username, password); err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
+	}
+	if err := mdm.SetPolicy(ctx, policyName, username, false); err != nil {
+		return fmt.Errorf("failed to attach policy: %w", err)
+	}
+
+	log.Printf("[signup] success: user=%q", username)
+	return nil
+}
+
+// --- HTTP handlers for the signup flow ---
+
+func signupFormHandler(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if !isValidSignupToken(token) {
+		log.Printf("[signup] GET /signup/%s rejected as invalid/expired", token)
+		http.Error(w, "Invalid or expired signup link.", http.StatusNotFound)
 		return
 	}
-	log.Printf("[admin-create-user] policy %q created", policyName)
 
-	// 5. Create the user
-	log.Printf("[admin-create-user] creating user %q", req.Username)
-	t = time.Now()
-	err = mdm.AddUser(ctx, req.Username, req.Password)
-	log.Printf("[admin-create-user] AddUser(%q) took %v, err=%v", req.Username, time.Since(t), err)
-	if err != nil {
-		http.Error(w, "failed to create user: "+err.Error(), http.StatusInternalServerError)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Create Account</title>
+<style>
+body { font-family: system-ui, sans-serif; background: #f9f7f3; margin: 0; padding: 40px 20px; color: #3f2e1e; }
+.card { max-width: 420px; margin: 0 auto; background: white; border: 1px solid #d4c5b5; border-radius: 12px; padding: 28px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+h1 { margin-top: 0; font-size: 1.4rem; }
+label { display: block; font-size: 0.9rem; margin-bottom: 4px; font-weight: 500; }
+input { width: 100%%; padding: 10px 12px; border: 1px solid #d4c5b5; border-radius: 8px; margin-bottom: 14px; font-size: 1rem; box-sizing: border-box; }
+button { background: #d4c5b5; color: #3f2e1e; border: none; padding: 12px 20px; border-radius: 8px; font-size: 1rem; cursor: pointer; width: 100%%; }
+button:hover { background: #c3b3a3; }
+.error { color: #b33; font-size: 0.9rem; margin-bottom: 12px; }
+.hint { font-size: 0.8rem; color: #6b5b4a; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Create your account</h1>
+<form method="POST" action="/signup/%s">
+<label>Username</label>
+<input name="username" required autocomplete="username" placeholder="yourname">
+<label>Password</label>
+<input name="password" type="password" required autocomplete="new-password">
+<label>Confirm Password</label>
+<input name="confirmPassword" type="password" required autocomplete="new-password">
+<button type="submit">Create Account &amp; Bucket</button>
+</form>
+<p class="hint">Your own private versioned bucket will be created. You will also get access to the "shared" bucket.</p>
+</div>
+</body>
+</html>`, token)
+}
+
+func signupSubmitHandler(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if !isValidSignupToken(token) {
+		log.Printf("[signup] POST /signup/%s rejected as invalid/expired", token)
+		http.Error(w, "Invalid or expired signup link.", http.StatusNotFound)
 		return
 	}
-	log.Printf("[admin-create-user] user %q created", req.Username)
 
-	// 6. Attach the policy to the user
-	log.Printf("[admin-create-user] attaching policy %q to user %q", policyName, req.Username)
-	t = time.Now()
-	err = mdm.SetPolicy(ctx, policyName, req.Username, false)
-	log.Printf("[admin-create-user] SetPolicy(%q -> %q) took %v, err=%v", policyName, req.Username, time.Since(t), err)
-	if err != nil {
-		http.Error(w, "failed to attach policy to user: "+err.Error(), http.StatusInternalServerError)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[admin-create-user] policy attached successfully")
 
-	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(`{"message":"user and bucket created successfully"}`))
-	log.Printf("[admin-create-user] success for username=%q", req.Username)
+	username := strings.TrimSpace(r.FormValue("username"))
+	password := r.FormValue("password")
+	confirm := r.FormValue("confirmPassword")
+
+	if username == "" || password == "" || password != confirm {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><html><body><h3>Error</h3><p>Username and matching passwords are required.</p><p><a href="javascript:history.back()">Go back</a></p></body></html>`)
+		return
+	}
+
+	err := createUserAndBucket(username, password)
+	if err != nil {
+		log.Printf("[signup] create failed for %q: %v", username, err)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><body><h3>Could not create account</h3><p>%s</p><p><a href="javascript:history.back()">Try again</a></p></body></html>`, err.Error())
+		return
+	}
+
+	// Success: consume token
+	consumeSignupToken(token)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!doctype html>
+<html><head><meta charset="utf-8"><title>Account Created</title>
+<style>body{font-family:system-ui;background:#f9f7f3;padding:40px;color:#3f2e1e} .card{max-width:420px;margin:0 auto;background:white;border:1px solid #d4c5b5;border-radius:12px;padding:28px}</style>
+</head><body>
+<div class="card">
+<h1>Account created!</h1>
+<p>Your username <strong>%s</strong> has been created along with your private bucket and access to "shared".</p>
+<p>You can now log in to the main storage interface using your new credentials.</p>
+<p><a href="/">Go to login</a></p>
+</div>
+</body></html>`, username)
 }
 
