@@ -771,7 +771,7 @@ function App() {
                 {loading ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
                     {Array.from({ length: 8 }).map((_, i) => (
-                      <div key={i} className="card h-52 animate-pulse bg-beige-100" />
+                      <div key={i} className="card h-44 animate-pulse bg-beige-100" />
                     ))}
                   </div>
                 ) : filteredItems.length === 0 ? (
@@ -795,7 +795,7 @@ function App() {
                         ) : (
                           <>
                             <div
-                              className="cursor-pointer"
+                              className="relative cursor-pointer overflow-hidden"
                               onClick={() => isImage(item.name) ? openPreview(item) : downloadFile(item)}
                             >
                               {isImage(item.name) && creds ? (
@@ -809,28 +809,38 @@ function App() {
                                   <File size={42} className="text-beige-500" />
                                 </div>
                               )}
+
+                              {/* Hover action buttons - top right over the photo */}
+                              <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all z-10">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
+                                  className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                  title="Download"
+                                >
+                                  <Download size={15} />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); deleteFile(item); }}
+                                  className="bg-white/90 hover:bg-red-50 text-red-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                  title="Delete"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
                             </div>
 
-                            <div className="p-3 flex-1 flex flex-col">
+                            {/* Compact bottom info: only name + date + size */}
+                            <div className="p-2.5">
                               <div
                                 onClick={() => isImage(item.name) ? openPreview(item) : downloadFile(item)}
-                                className="font-medium text-sm leading-snug truncate cursor-pointer hover:underline"
+                                className="font-medium text-sm leading-tight truncate cursor-pointer hover:underline mb-1"
                               >
                                 {item.name}
                               </div>
 
-                              <div className="mt-auto pt-3 flex items-center justify-between text-xs text-beige-600">
+                              <div className="flex items-center justify-between text-[10px] text-beige-600">
                                 <span>{formatSize(item.size)}</span>
                                 {item.lastModified && <span>{format(item.lastModified, 'MMM d')}</span>}
-                              </div>
-
-                              <div className="flex gap-1.5 pt-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => downloadFile(item)} className="btn btn-ghost flex-1 justify-center text-xs py-1">
-                                  <Download size={14} /> Download
-                                </button>
-                                <button onClick={() => deleteFile(item)} className="btn btn-ghost text-red-600 hover:bg-red-50 px-2" title="Delete">
-                                  <Trash2 size={14} />
-                                </button>
                               </div>
                             </div>
                           </>
