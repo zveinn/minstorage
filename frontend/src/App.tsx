@@ -36,10 +36,7 @@ interface FileItem {
   isDeleted?: boolean
 }
 
-interface UploadProgress {
-  name: string
-  progress: number
-}
+
 
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.avif']
 
@@ -253,7 +250,13 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [showDeleted, setShowDeleted] = useState(false)
-  const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([])
+  const [currentUpload, setCurrentUpload] = useState<{
+    name: string
+    percent: number
+    speed: number
+    done: number
+    total: number
+  } | null>(null)
 
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const [isDragSelecting, setIsDragSelecting] = useState(false)
@@ -373,7 +376,6 @@ function App() {
     setItems([])
     setCurrentPrefix('')
     setSearch('')
-    setUploadQueue([])
     setPreviewItem(null)
     setPreviewUrl(null)
     clearSelection()
@@ -636,16 +638,14 @@ function App() {
     const fileArray = Array.from(files)
     if (fileArray.length === 0) return
 
-    const newUploads: UploadProgress[] = fileArray.map(f => ({ name: f.name, progress: 0 }))
-    setUploadQueue(prev => [...prev, ...newUploads])
+    const total = fileArray.length
+    let done = 0
 
     for (const file of fileArray) {
       const storageName = makeStorageName(file.name)
       const objectName = currentPrefix + storageName
 
       try {
-        setUploadQueue(q => q.map(u => u.name === file.name ? { ...u, progress: 10 } : u))
-
         const upload = new Upload({
           client,
           params: {
@@ -656,9 +656,40 @@ function App() {
           },
         })
 
+        let lastLoaded = 0
+        let lastTime = Date.now()
+
+        upload.on('httpUploadProgress', (progress: any) => {
+          if (!progress.total) return
+          const percent = Math.round((progress.loaded / progress.total) * 100)
+          const now = Date.now()
+          const timeDiff = (now - lastTime) / 1000
+          let speed = 0
+          if (timeDiff > 0.1) {
+            const bytesDiff = progress.loaded - lastLoaded
+            speed = bytesDiff / timeDiff / (1024 * 1024)
+            lastLoaded = progress.loaded
+            lastTime = now
+          }
+          setCurrentUpload({
+            name: file.name,
+            percent,
+            speed: parseFloat(speed.toFixed(1)),
+            done,
+            total,
+          })
+        })
+
         await upload.done()
 
-        setUploadQueue(q => q.map(u => u.name === file.name ? { ...u, progress: 100 } : u))
+        done++
+        setCurrentUpload({
+          name: file.name,
+          percent: 100,
+          speed: 0,
+          done,
+          total,
+        })
         toast.success(`Uploaded ${file.name}`)
       } catch (err: any) {
         console.error(err)
@@ -667,7 +698,7 @@ function App() {
     }
 
     setTimeout(() => {
-      setUploadQueue([])
+      setCurrentUpload(null)
       if (selectedBucket && client && creds) {
         loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
       }
@@ -1044,17 +1075,20 @@ function App() {
                   Drop files here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
                 </div>
 
-                {uploadQueue.length > 0 && (
+                {currentUpload && (
                   <div className="mb-5 card p-4">
-                    <div className="text-xs uppercase tracking-widest mb-3 text-beige-600 font-semibold">Uploading</div>
-                    {uploadQueue.map((u, i) => (
-                      <div key={i} className="flex items-center gap-3 text-sm mb-2 last:mb-0">
-                        <div className="flex-1 truncate">{u.name}</div>
-                        <div className="w-28 h-1.5 bg-beige-200 rounded overflow-hidden">
-                          <div className="h-full bg-beige-500 transition-all" style={{ width: `${u.progress}%` }} />
-                        </div>
-                      </div>
-                    ))}
+                    <div className="text-xs uppercase tracking-widest mb-1 text-beige-600 font-semibold">Uploading</div>
+                    <div className="flex justify-between text-xs mb-1 text-beige-600">
+                      <span>{currentUpload.done}/{currentUpload.total} files</span>
+                      <span>{currentUpload.speed > 0 ? `${currentUpload.speed} MB/s` : ''}</span>
+                    </div>
+                    <div className="h-2 bg-beige-200 rounded overflow-hidden mb-1">
+                      <div 
+                        className="h-full bg-beige-500 transition-all" 
+                        style={{ width: `${currentUpload.percent}%` }} 
+                      />
+                    </div>
+                    <div className="text-sm truncate font-medium mt-1">{currentUpload.name}</div>
                   </div>
                 )}
 
