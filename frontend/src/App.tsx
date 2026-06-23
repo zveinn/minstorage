@@ -11,7 +11,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff
+  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -34,6 +34,7 @@ interface FileItem {
   lastModified?: Date
   isDir: boolean
   isDeleted?: boolean
+  versionId?: string
 }
 
 
@@ -137,6 +138,7 @@ async function listObjectsWithPrefix(
         etag: '',
         lastModified: dm.LastModified,
         isDeleted: true,
+        versionId: dm.VersionId,
       })
     }
   })
@@ -444,6 +446,7 @@ function App() {
             lastModified: f.lastModified,
             isDir: false,
             isDeleted: f.isDeleted || false,
+            versionId: f.versionId,
           })),
       ]
 
@@ -992,6 +995,29 @@ function App() {
     }
   }
 
+  const restoreFile = async (item: FileItem) => {
+    if (!selectedBucket || !client) return
+    if (!item.versionId) {
+      toast.error('Cannot restore: missing version info')
+      return
+    }
+    if (!confirm(`Restore ${item.name}?`)) return
+
+    try {
+      await client.send(
+        new DeleteObjectCommand({
+          Bucket: selectedBucket,
+          Key: item.fullPath,
+          VersionId: item.versionId,
+        })
+      )
+      toast.success(`Restored ${item.name}`)
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+    } catch (err: any) {
+      toast.error('Restore failed: ' + err.message)
+    }
+  }
+
   const openPreview = async (item: FileItem) => {
     if (!selectedBucket || !client) return
     setPreviewItem(item)
@@ -1438,7 +1464,15 @@ function App() {
 
                               {/* Hover action buttons - top right over the photo */}
                               <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all z-10">
-                                {!item.isDeleted && (
+                                {item.isDeleted ? (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); restoreFile(item); }}
+                                    className="bg-white/90 hover:bg-green-50 text-green-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                    title="Restore"
+                                  >
+                                    <RotateCcw size={15} />
+                                  </button>
+                                ) : (
                                   <button
                                     onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
                                     className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
@@ -1450,7 +1484,7 @@ function App() {
                                 <button
                                   onClick={(e) => { e.stopPropagation(); deleteFile(item); }}
                                   className="bg-white/90 hover:bg-red-50 text-red-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                  title={item.isDeleted ? "Permanently delete (remove marker)" : "Delete"}
+                                  title={item.isDeleted ? "Permanently delete" : "Delete"}
                                 >
                                   <Trash2 size={15} />
                                 </button>
