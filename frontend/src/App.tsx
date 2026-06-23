@@ -7,12 +7,14 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
+  GetObjectTaggingCommand,
+  PutObjectTaggingCommand,
 } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus
+  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -284,6 +286,13 @@ function App() {
   const [shareExpirySeconds, setShareExpirySeconds] = useState(3600) // default 1 hour
   const [generatedShareUrl, setGeneratedShareUrl] = useState<string>('')
   const [isGeneratingShare, setIsGeneratingShare] = useState(false)
+
+  // Note modal state
+  const [noteModalOpen, setNoteModalOpen] = useState(false)
+  const [noteItem, setNoteItem] = useState<FileItem | null>(null)
+  const [noteText, setNoteText] = useState('')
+  const [isLoadingNote, setIsLoadingNote] = useState(false)
+  const [isSavingNote, setIsSavingNote] = useState(false)
 
   const [loginForm, setLoginForm] = useState(() => {
     // Auto-detect MinIO endpoint:
@@ -899,6 +908,75 @@ function App() {
     setShareItem(null)
     setGeneratedShareUrl('')
     setIsGeneratingShare(false)
+  }
+
+  const openNoteModal = async (item: FileItem) => {
+    if (!selectedBucket || !client) return
+    setNoteItem(item)
+    setIsLoadingNote(true)
+    setNoteModalOpen(true)
+    try {
+      const res = await client.send(new GetObjectTaggingCommand({
+        Bucket: selectedBucket,
+        Key: item.fullPath,
+      }))
+      const noteTag = res.TagSet?.find(t => t.Key === 'note')
+      setNoteText(noteTag?.Value || '')
+    } catch (err: any) {
+      // No tags or error (e.g. no tagging permission or no tags set) - start empty
+      setNoteText('')
+    } finally {
+      setIsLoadingNote(false)
+    }
+  }
+
+  const closeNoteModal = () => {
+    setNoteModalOpen(false)
+    setNoteItem(null)
+    setNoteText('')
+    setIsLoadingNote(false)
+    setIsSavingNote(false)
+  }
+
+  const saveNote = async () => {
+    if (!noteItem || !selectedBucket || !client) return
+    const text = noteText.trim()
+    if (text.length > 256) {
+      toast.error('Note cannot exceed 256 characters')
+      return
+    }
+    setIsSavingNote(true)
+    try {
+      // Fetch existing tags to merge (so we don't overwrite other tags)
+      let existingTags: { Key: string; Value: string }[] = []
+      try {
+        const res = await client.send(new GetObjectTaggingCommand({
+          Bucket: selectedBucket,
+          Key: noteItem.fullPath,
+        }))
+        existingTags = (res.TagSet || []).filter((t): t is { Key: string; Value: string } => !!t.Key) || []
+      } catch {}
+
+      // Remove any existing "note" tag
+      const otherTags = existingTags.filter(t => t.Key !== 'note')
+
+      const newTagSet = text
+        ? [...otherTags, { Key: 'note', Value: text }]
+        : otherTags
+
+      await client.send(new PutObjectTaggingCommand({
+        Bucket: selectedBucket,
+        Key: noteItem.fullPath,
+        Tagging: { TagSet: newTagSet }
+      }))
+
+      toast.success(text ? 'Note saved as tag' : 'Note removed')
+      closeNoteModal()
+    } catch (err: any) {
+      toast.error('Failed to save note: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsSavingNote(false)
+    }
   }
 
   const getRelativePosition = (e: React.MouseEvent) => {
@@ -1720,6 +1798,13 @@ function App() {
                                     >
                                       <Link size={15} />
                                     </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); openNoteModal(item); }}
+                                      className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      title="Add/Edit note"
+                                    >
+                                      <MessageSquare size={15} />
+                                    </button>
                                   </>
                                 )}
                                 <button
@@ -1931,6 +2016,72 @@ function App() {
               <div className="pt-2 text-[10px] text-beige-500 border-t border-beige-100">
                 Anyone with this link can download the file. No login required.
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Note Modal */}
+      {noteModalOpen && noteItem && (
+        <div className="modal" onClick={closeNoteModal}>
+          <div className="modal-content w-full max-w-md" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-beige-200 bg-beige-50">
+              <div className="font-medium truncate pr-4">Note for {noteItem.name}</div>
+              <button onClick={closeNoteModal} className="btn btn-ghost p-2">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5">
+              {isLoadingNote ? (
+                <div className="text-center py-8 text-beige-600">Loading note...</div>
+              ) : (
+                <>
+                  <textarea
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                    maxLength={256}
+                    placeholder="Enter your note here..."
+                    className="input h-32 w-full resize-y text-sm"
+                    disabled={isSavingNote}
+                  />
+                  <div className="text-xs text-beige-500 text-right mt-1">
+                    {noteText.length}/256
+                  </div>
+
+                  <div className="flex gap-2 mt-4">
+                    <button
+                      onClick={closeNoteModal}
+                      disabled={isSavingNote}
+                      className="btn btn-secondary flex-1"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={saveNote}
+                      disabled={isSavingNote}
+                      className="btn btn-primary flex-1"
+                    >
+                      {isSavingNote ? 'Saving...' : 'Save note'}
+                    </button>
+                  </div>
+
+                  {noteText.length > 0 && (
+                    <button
+                      onClick={() => setNoteText('')}
+                      disabled={isSavingNote}
+                      className="btn btn-ghost w-full mt-2 text-xs text-red-600"
+                    >
+                      Clear note
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="px-5 py-3 text-[10px] text-beige-500 border-t border-beige-100 bg-beige-50">
+              This note is stored as a tag (key: "note") on the object.
             </div>
           </div>
         </div>
