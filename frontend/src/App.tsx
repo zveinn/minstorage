@@ -1772,43 +1772,55 @@ function App() {
       {shareModalOpen && shareItem && (
         <div className="modal" onClick={closeShareModal}>
           <div className="modal-content w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold">Share download link</h2>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-beige-200 bg-beige-50">
+              <div className="font-medium">Share download link</div>
               <button onClick={closeShareModal} className="btn btn-ghost p-2">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mb-4">
-              <div className="text-sm text-beige-600 mb-1">File</div>
-              <div className="font-medium truncate">{shareItem.name}</div>
-            </div>
+            <div className="p-5 space-y-4">
+              {/* File info */}
+              <div>
+                <div className="text-xs uppercase tracking-widest text-beige-600 mb-1">File</div>
+                <div className="font-medium truncate bg-beige-50 px-3 py-2 rounded text-sm border border-beige-100">
+                  {shareItem.name}
+                </div>
+              </div>
 
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-2">Link expires in</label>
-              <div className="flex gap-2 flex-wrap">
-                {[900, 3600, 21600, 86400, 604800].map((secs) => {
-                  const labels: Record<number, string> = {
-                    900: '15 min',
-                    3600: '1 hour',
-                    21600: '6 hours',
-                    86400: '24 hours',
-                    604800: '7 days',
-                  }
-                  return (
-                    <button
-                      key={secs}
-                      onClick={() => {
-                        setShareExpirySeconds(secs)
-                        setGeneratedShareUrl('')
-                      }}
-                      className={`btn text-xs py-1 px-3 ${shareExpirySeconds === secs ? 'btn-primary' : 'btn-secondary'}`}
-                    >
-                      {labels[secs]}
-                    </button>
-                  )
-                })}
-                <div className="flex items-center gap-1 text-xs">
+              {/* Expiry options */}
+              <div>
+                <div className="text-xs uppercase tracking-widest text-beige-600 mb-2">Link expires after</div>
+
+                {/* Presets */}
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {[900, 3600, 21600, 86400, 604800].map((secs) => {
+                    const labels: Record<number, string> = {
+                      900: '15 min',
+                      3600: '1 hour',
+                      21600: '6 hours',
+                      86400: '24 hours',
+                      604800: '7 days',
+                    }
+                    const active = shareExpirySeconds === secs
+                    return (
+                      <button
+                        key={secs}
+                        onClick={() => {
+                          setShareExpirySeconds(secs)
+                          setGeneratedShareUrl('')
+                        }}
+                        className={`btn text-xs py-1 px-3 ${active ? 'btn-primary' : 'btn-secondary'}`}
+                      >
+                        {labels[secs]}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {/* Custom minutes */}
+                <div className="flex items-center gap-2">
                   <input
                     type="number"
                     min={1}
@@ -1819,56 +1831,65 @@ function App() {
                       setShareExpirySeconds(mins * 60)
                       setGeneratedShareUrl('')
                     }}
-                    className="input w-16 py-1 text-xs"
+                    className="input w-20 py-1 text-sm"
+                    onFocus={() => {
+                      // When user focuses custom, keep current value but mark as custom
+                    }}
                   />
-                  <span>min</span>
+                  <span className="text-sm text-beige-600">minutes (custom)</span>
+                </div>
+
+                <div className="text-[10px] text-beige-500 mt-1.5">
+                  Longer links are less secure. 7 days is the recommended maximum.
                 </div>
               </div>
-              <div className="text-[10px] text-beige-500 mt-1">
-                Max recommended: 7 days. Longer links are less secure.
-              </div>
-            </div>
 
-            {!generatedShareUrl ? (
-              <button
-                onClick={handleGenerateShareLink}
-                disabled={isGeneratingShare}
-                className="btn btn-primary w-full"
-              >
-                {isGeneratingShare ? 'Generating...' : 'Generate shareable link'}
-              </button>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Share this link</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={generatedShareUrl}
-                    readOnly
-                    className="input flex-1 text-xs font-mono"
-                    onClick={(e) => (e.target as HTMLInputElement).select()}
-                  />
-                  <button onClick={copyShareUrl} className="btn btn-secondary text-xs px-3">
-                    Copy
+              {/* Action area */}
+              {!generatedShareUrl ? (
+                <button
+                  onClick={handleGenerateShareLink}
+                  disabled={isGeneratingShare}
+                  className="btn btn-primary w-full justify-center"
+                >
+                  {isGeneratingShare ? 'Generating link...' : 'Generate shareable link'}
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs uppercase tracking-widest text-beige-600 mb-1.5">Share this link</div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={generatedShareUrl}
+                        readOnly
+                        className="input flex-1 text-xs font-mono bg-beige-50"
+                        onClick={(e) => (e.target as HTMLInputElement).select()}
+                      />
+                      <button 
+                        onClick={copyShareUrl} 
+                        className="btn btn-secondary text-xs px-3 flex items-center gap-1"
+                      >
+                        <Check size={14} /> Copy
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-beige-500">
+                    This link will stop working in <span className="font-medium">{Math.floor(shareExpirySeconds / 60)} minutes</span>.
+                  </div>
+
+                  <button
+                    onClick={() => setGeneratedShareUrl('')}
+                    className="btn btn-secondary w-full text-xs justify-center"
+                  >
+                    Generate a new link
                   </button>
                 </div>
-                <div className="text-[10px] text-beige-500 mt-2">
-                  This link will expire in {Math.floor(shareExpirySeconds / 60)} minutes.
-                  Anyone with the link can download the file.
-                </div>
-                <button
-                  onClick={() => {
-                    setGeneratedShareUrl('')
-                  }}
-                  className="btn btn-secondary w-full mt-3 text-xs"
-                >
-                  Generate new link
-                </button>
-              </div>
-            )}
+              )}
 
-            <div className="mt-4 text-[10px] text-beige-500">
-              The recipient does not need an account. They can download directly using this temporary link.
+              <div className="pt-2 text-[10px] text-beige-500 border-t border-beige-100">
+                Anyone with this link can download the file. No login required.
+              </div>
             </div>
           </div>
         </div>
