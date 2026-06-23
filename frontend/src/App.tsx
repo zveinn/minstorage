@@ -14,7 +14,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare
+  LogOut, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -1544,18 +1544,43 @@ function App() {
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
       <header className="border-b border-beige-200 bg-white/80 backdrop-blur sticky top-0 z-50">
-        <div className="px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-beige-300 flex items-center justify-center">
-              <Folder size={20} className="text-beige-700" />
+        <div className="px-6 h-16 flex items-center gap-4">
+          {/* Left: logo + searchbar */}
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="w-9 h-9 rounded-xl bg-beige-300 flex items-center justify-center">
+                <Folder size={20} className="text-beige-700" />
+              </div>
+              <div>
+                <div className="font-semibold tracking-tight">Family Storage</div>
+                <div className="text-[10px] text-beige-600 -mt-0.5">MinIO • Local</div>
+              </div>
             </div>
-            <div>
-              <div className="font-semibold tracking-tight">Family Storage</div>
-              <div className="text-[10px] text-beige-600 -mt-0.5">MinIO • Local</div>
-            </div>
+
+            {selectedBucket && (
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search..."
+                className="input flex-1 min-w-[12rem] text-sm py-1.5"
+              />
+            )}
           </div>
 
-          <div className="flex items-center gap-3 text-sm">
+          {/* Right: dropdown + endpoint + disconnect */}
+          <div className="flex items-center gap-3 text-sm shrink-0">
+            {selectedBucket && (
+              <select
+                value={searchType}
+                onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
+                className="input text-sm py-1.5 px-2 w-20"
+              >
+                <option value="name">Name</option>
+                <option value="note">Note</option>
+              </select>
+            )}
+
             <div className="px-3 py-1 rounded-full bg-beige-100 text-beige-700 text-xs font-medium">
               {creds?.endpoint}
             </div>
@@ -1631,25 +1656,6 @@ function App() {
             </div>
 
             <div className="flex items-center gap-2">
-              <select
-                value={searchType}
-                onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
-                className="input text-xs py-1 px-1 w-20"
-              >
-                <option value="name">Name</option>
-                <option value="note">Note</option>
-              </select>
-              <div className="relative w-48 sm:w-64">
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={searchType === 'name' ? 'Search files...' : 'Search notes...'}
-                  className="input pl-9 py-1.5 text-sm"
-                />
-                <Search size={15} className="absolute left-3 top-2.5 text-beige-600" />
-              </div>
-
               {isInSelectMode && (
                 <div className="flex items-center gap-2 text-sm">
                   <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
