@@ -189,12 +189,25 @@ function App() {
   const [previewItem, setPreviewItem] = useState<FileItem | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
-  const [loginForm, setLoginForm] = useState({
-    endpoint: '127.0.0.1:7000',
-    accessKey: '',
-    secretKey: '',
-    useSSL: false,
-    previewUrl: '', // blank = use same origin (recommended for embedded Go server)
+  const [loginForm, setLoginForm] = useState(() => {
+    // Auto-detect MinIO endpoint:
+    // Use the same host the UI is served from, and current port - 2
+    let endpoint = '127.0.0.1:7000'
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname || '127.0.0.1'
+      let currentPort = window.location.port
+        ? parseInt(window.location.port, 10)
+        : (window.location.protocol === 'https:' ? 443 : 80)
+      const minioPort = currentPort - 2
+      endpoint = `${host}:${minioPort}`
+    }
+    return {
+      endpoint,
+      accessKey: '',
+      secretKey: '',
+      useSSL: false,
+      previewUrl: '', // blank = use same origin (recommended for embedded Go server)
+    }
   })
 
   const isLoggedIn = !!creds && !!client
@@ -494,11 +507,11 @@ function App() {
                 <input
                   type="text"
                   className="input"
-                  placeholder="127.0.0.1:7000"
+                  placeholder="host:port (auto-detected as current-host:port-2)"
                   value={loginForm.endpoint}
                   onChange={(e) => setLoginForm({ ...loginForm, endpoint: e.target.value })}
                 />
-                <p className="text-xs text-beige-700 mt-1">Host:port — no protocol</p>
+                <p className="text-xs text-beige-700 mt-1">Auto-filled from current host + (port - 2). Edit to override. No protocol.</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

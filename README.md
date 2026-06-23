@@ -14,7 +14,7 @@ A minimalistic modern file browser for MinIO.
 
 - Node.js 20+
 - Go 1.22+
-- MinIO running at `127.0.0.1:7000` (or anywhere reachable)
+- MinIO is expected on the same host as the app, but on port = (app port - 2) by convention. (The UI auto-detects this.)
 
 Default credentials used in examples: `minioadmin` / `minioadmin`
 
@@ -60,7 +60,7 @@ go run main.go
 
 ### 3. Login
 
-- **MinIO Endpoint**: `127.0.0.1:7000`
+- **MinIO Endpoint**: auto-filled (current host + current-port-2). You can edit it.
 - Access Key / Secret Key
 - **Preview Service**: leave **blank** (uses same origin)
 
@@ -77,7 +77,7 @@ You must configure CORS on MinIO for the origin where the app is served (e.g. `h
 ### Using `mc` (recommended):
 
 ```bash
-mc alias set local http://127.0.0.1:7000 minioadmin minioadmin
+mc alias set local http://127.0.0.1:6998 minioadmin minioadmin   # example: if app on 7000, MinIO on 6998
 
 # Allow the origin serving the app
 mc admin config set local api cors_allow_origin 'http://localhost:8080'
