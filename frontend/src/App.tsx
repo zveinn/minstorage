@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   S3Client,
   ListBucketsCommand,
@@ -258,6 +258,10 @@ function App() {
     total: number
   } | null>(null)
 
+  // Folder hierarchy for the selected bucket (left sidebar)
+  const [prefixChildren, setPrefixChildren] = useState<Record<string, string[]>>({})
+  const [expandedPrefixes, setExpandedPrefixes] = useState<Set<string>>(new Set())
+
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const [isDragSelecting, setIsDragSelecting] = useState(false)
   const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 })
@@ -288,6 +292,15 @@ function App() {
   })
 
   const isLoggedIn = !!creds && !!client
+
+  // When bucket changes, load its top-level folders for the sidebar tree
+  useEffect(() => {
+    if (selectedBucket && client) {
+      setPrefixChildren({})
+      setExpandedPrefixes(new Set())
+      loadPrefixChildren(selectedBucket, '')
+    }
+  }, [selectedBucket, client])
 
   const STORAGE_KEY = 'FAMILY_STORAGE_CREDS'
 
@@ -379,6 +392,8 @@ function App() {
     setPreviewItem(null)
     setPreviewUrl(null)
     clearSelection()
+    setPrefixChildren({})
+    setExpandedPrefixes(new Set())
     toast.info('Disconnected')
   }
 
@@ -453,6 +468,23 @@ function App() {
     setSearch('')
     clearSelection()
     loadObjects(selectedBucket, prefix, client, creds, showDeleted)
+
+    // Auto-expand the path in the sidebar tree
+    if (prefix) {
+      setExpandedPrefixes(prev => {
+        const next = new Set(prev)
+        let p = ''
+        prefix.split('/').filter(Boolean).forEach(part => {
+          p += part + '/'
+          next.add(p)
+          // ensure children are loaded for this level
+          if (selectedBucket && !prefixChildren[p]) {
+            loadPrefixChildren(selectedBucket, p)
+          }
+        })
+        return next
+      })
+    }
   }
 
   const goHome = () => {
@@ -486,6 +518,80 @@ function App() {
   const contentRef = useRef<HTMLDivElement>(null)
 
   const isInSelectMode = selectedItems.size > 0
+
+  // Load direct child prefixes (folders) for a given prefix in the bucket
+  const loadPrefixChildren = async (bucket: string, prefix: string) => {
+    if (!client) return
+    try {
+      // Always load structure without deleted filter for tree
+      const { prefixes } = await listObjectsWithPrefix(client, bucket, prefix, false)
+      setPrefixChildren(prev => ({ ...prev, [prefix]: prefixes }))
+    } catch (e) {
+      console.error('Failed to load prefixes for', prefix, e)
+    }
+  }
+
+  const togglePrefix = (prefix: string) => {
+    setExpandedPrefixes(prev => {
+      const next = new Set(prev)
+      if (next.has(prefix)) {
+        next.delete(prefix)
+      } else {
+        next.add(prefix)
+        // lazy load children
+        if (selectedBucket && !prefixChildren[prefix]) {
+          loadPrefixChildren(selectedBucket, prefix)
+        }
+      }
+      return next
+    })
+  }
+
+  const navigateToPrefix = (prefix: string) => {
+    if (!selectedBucket) return
+    navigateTo(prefix)
+    // ensure expanded
+    if (prefix) {
+      setExpandedPrefixes(prev => {
+        const next = new Set(prev)
+        // expand all ancestors
+        let p = ''
+        prefix.split('/').filter(Boolean).forEach(part => {
+          p += part + '/'
+          next.add(p)
+        })
+        return next
+      })
+    }
+  }
+
+  // Recursive tree renderer for folders in sidebar
+  const renderPrefixTree = (parentPrefix: string, depth: number): React.ReactNode => {
+    const children = prefixChildren[parentPrefix] || []
+    return children.map((childPrefix) => {
+      const isExpanded = expandedPrefixes.has(childPrefix)
+      const folderName = childPrefix.replace(parentPrefix, '').replace(/\/$/, '')
+      const isActive = currentPrefix === childPrefix
+      return (
+        <div key={childPrefix} style={{ marginLeft: `${depth * 12}px` }}>
+          <div
+            className={`flex items-center gap-1.5 px-2 py-1 text-sm rounded cursor-pointer hover:bg-beige-100 ${isActive ? 'bg-beige-200 font-medium' : 'text-warm-800'}`}
+            onClick={() => navigateToPrefix(childPrefix)}
+          >
+            <span
+              onClick={(e) => { e.stopPropagation(); togglePrefix(childPrefix); }}
+              className="inline-block w-3 text-center cursor-pointer select-none"
+            >
+              {isExpanded ? '▼' : '▶'}
+            </span>
+            <Folder size={14} className="shrink-0 text-beige-600" />
+            <span className="truncate">{folderName}</span>
+          </div>
+          {isExpanded && renderPrefixTree(childPrefix, depth + 1)}
+        </div>
+      )
+    })
+  }
 
   const toggleSelect = (fullPath: string) => {
     setSelectedItems(prev => {
@@ -1090,17 +1196,25 @@ function App() {
 
           <div className="space-y-1">
             {buckets.map((b) => (
-              <button
-                key={b}
-                onClick={() => selectBucket(b)}
-                className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${selectedBucket === b
-                  ? 'bg-beige-200 text-warm-900 font-medium'
-                  : 'hover:bg-beige-100 text-warm-800'
-                  }`}
-              >
-                <Folder size={16} className="shrink-0" />
-                <span className="truncate">{b}</span>
-              </button>
+              <React.Fragment key={b}>
+                <button
+                  onClick={() => selectBucket(b)}
+                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${selectedBucket === b
+                    ? 'bg-beige-200 text-warm-900 font-medium'
+                    : 'hover:bg-beige-100 text-warm-800'
+                    }`}
+                >
+                  <Folder size={16} className="shrink-0" />
+                  <span className="truncate">{b}</span>
+                </button>
+
+                {/* Show folder hierarchy for the selected bucket (bucket name acts as root) */}
+                {selectedBucket === b && (
+                  <div className="ml-4 mt-1 mb-2 space-y-0.5 text-sm">
+                    {renderPrefixTree('', 0)}
+                  </div>
+                )}
+              </React.Fragment>
             ))}
           </div>
 
