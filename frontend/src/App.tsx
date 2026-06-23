@@ -1915,7 +1915,7 @@ function App() {
                               </div>
 
                               {showNotes && notes[item.fullPath] && (
-                                <div className="mt-1 text-sm text-beige-600 italic truncate" title={notes[item.fullPath]}>
+                                <div className="mt-1 text-sm text-black truncate" title={notes[item.fullPath]}>
                                   {notes[item.fullPath]}
                                 </div>
                               )}
@@ -2172,7 +2172,7 @@ function App() {
       {/* Cursor-following tooltip for notes */}
       {tooltip && !showNotes && (
         <div 
-          className="fixed z-[100] pointer-events-none bg-beige-50 border border-beige-200 text-beige-700 text-sm px-3 py-2 rounded-lg shadow-md max-w-[280px] whitespace-pre-wrap break-words"
+          className="fixed z-[100] pointer-events-none bg-beige-50 border border-beige-200 text-black text-sm px-3 py-2 rounded-lg shadow-md max-w-[280px] whitespace-pre-wrap break-words"
           style={{ 
             left: `${tooltip.x + 12}px`, 
             top: `${tooltip.y + 12}px` 
