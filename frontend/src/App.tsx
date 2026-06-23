@@ -85,9 +85,11 @@ async function listObjectsWithPrefix(
 
     const response = await client.send(command)
 
-    const prefixes = (response.CommonPrefixes || [])
+    let prefixes = (response.CommonPrefixes || [])
       .map((p) => p.Prefix!)
       .filter(Boolean)
+
+    prefixes = prefixes.filter(p => p && p !== prefix && p.startsWith(prefix || ''))
 
     const files = (response.Contents || [])
       .filter((obj) => obj.Key && obj.Key !== prefix)
@@ -111,9 +113,11 @@ async function listObjectsWithPrefix(
 
   const response = await client.send(command)
 
-  const prefixes = (response.CommonPrefixes || [])
+  let prefixes = (response.CommonPrefixes || [])
     .map((p) => p.Prefix!)
     .filter(Boolean)
+
+  prefixes = prefixes.filter(p => p && p !== prefix && p.startsWith(prefix || ''))
 
   const files: any[] = []
 
