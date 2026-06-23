@@ -11,7 +11,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw
+  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -272,6 +272,13 @@ function App() {
 
   const [previewItem, setPreviewItem] = useState<FileItem | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  // Share link modal state
+  const [shareModalOpen, setShareModalOpen] = useState(false)
+  const [shareItem, setShareItem] = useState<FileItem | null>(null)
+  const [shareExpirySeconds, setShareExpirySeconds] = useState(3600) // default 1 hour
+  const [generatedShareUrl, setGeneratedShareUrl] = useState<string>('')
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false)
 
   const [loginForm, setLoginForm] = useState(() => {
     // Auto-detect MinIO endpoint:
@@ -842,6 +849,53 @@ function App() {
     return getSignedUrl(client, command, { expiresIn: 60 * 5 })
   }
 
+  const generateShareableDownloadUrl = async (item: FileItem, expiresIn: number): Promise<string> => {
+    if (!selectedBucket || !client) throw new Error('No client')
+    const command = new GetObjectCommand({
+      Bucket: selectedBucket,
+      Key: item.fullPath,
+      ResponseContentDisposition: `attachment; filename="${item.name}"`,
+    })
+    return getSignedUrl(client, command, { expiresIn })
+  }
+
+  const handleGenerateShareLink = async () => {
+    if (!shareItem) return
+    setIsGeneratingShare(true)
+    try {
+      const url = await generateShareableDownloadUrl(shareItem, shareExpirySeconds)
+      setGeneratedShareUrl(url)
+    } catch (err: any) {
+      toast.error('Failed to generate link: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsGeneratingShare(false)
+    }
+  }
+
+  const copyShareUrl = async () => {
+    if (!generatedShareUrl) return
+    try {
+      await navigator.clipboard.writeText(generatedShareUrl)
+      toast.success('Link copied to clipboard')
+    } catch {
+      toast.error('Failed to copy link')
+    }
+  }
+
+  const openShareModal = (item: FileItem) => {
+    setShareItem(item)
+    setShareExpirySeconds(3600) // reset to 1h default
+    setGeneratedShareUrl('')
+    setShareModalOpen(true)
+  }
+
+  const closeShareModal = () => {
+    setShareModalOpen(false)
+    setShareItem(null)
+    setGeneratedShareUrl('')
+    setIsGeneratingShare(false)
+  }
+
   const getRelativePosition = (e: React.MouseEvent) => {
     const rect = contentRef.current?.getBoundingClientRect()
     if (!rect) return { x: 0, y: 0 }
@@ -1212,11 +1266,14 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && previewItem) closePreview()
+      if (e.key === 'Escape') {
+        if (previewItem) closePreview()
+        if (shareModalOpen) closeShareModal()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [previewItem])
+  }, [previewItem, shareModalOpen])
 
   // LOGIN SCREEN
   if (!isLoggedIn) {
@@ -1607,13 +1664,22 @@ function App() {
                                     <RotateCcw size={15} />
                                   </button>
                                 ) : (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
-                                    className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                    title="Download"
-                                  >
-                                    <Download size={15} />
-                                  </button>
+                                  <>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
+                                      className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      title="Download"
+                                    >
+                                      <Download size={15} />
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); openShareModal(item); }}
+                                      className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      title="Get shareable download link"
+                                    >
+                                      <Link size={15} />
+                                    </button>
+                                  </>
                                 )}
                                 <button
                                   onClick={(e) => { e.stopPropagation(); deleteFile(item); }}
@@ -1697,6 +1763,112 @@ function App() {
             <div className="px-5 py-2.5 text-xs border-t border-beige-200 bg-white text-beige-600 flex justify-between">
               <div>{formatSize(previewItem.size)}</div>
               {previewItem.lastModified && <div>{format(previewItem.lastModified, 'PPpp')}</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Share Link Modal */}
+      {shareModalOpen && shareItem && (
+        <div className="modal" onClick={closeShareModal}>
+          <div className="modal-content w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold">Share download link</h2>
+              <button onClick={closeShareModal} className="btn btn-ghost p-2">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <div className="text-sm text-beige-600 mb-1">File</div>
+              <div className="font-medium truncate">{shareItem.name}</div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">Link expires in</label>
+              <div className="flex gap-2 flex-wrap">
+                {[900, 3600, 21600, 86400, 604800].map((secs) => {
+                  const labels: Record<number, string> = {
+                    900: '15 min',
+                    3600: '1 hour',
+                    21600: '6 hours',
+                    86400: '24 hours',
+                    604800: '7 days',
+                  }
+                  return (
+                    <button
+                      key={secs}
+                      onClick={() => {
+                        setShareExpirySeconds(secs)
+                        setGeneratedShareUrl('')
+                      }}
+                      className={`btn text-xs py-1 px-3 ${shareExpirySeconds === secs ? 'btn-primary' : 'btn-secondary'}`}
+                    >
+                      {labels[secs]}
+                    </button>
+                  )
+                })}
+                <div className="flex items-center gap-1 text-xs">
+                  <input
+                    type="number"
+                    min={1}
+                    max={10080}
+                    value={Math.floor(shareExpirySeconds / 60)}
+                    onChange={(e) => {
+                      const mins = Math.max(1, parseInt(e.target.value) || 1)
+                      setShareExpirySeconds(mins * 60)
+                      setGeneratedShareUrl('')
+                    }}
+                    className="input w-16 py-1 text-xs"
+                  />
+                  <span>min</span>
+                </div>
+              </div>
+              <div className="text-[10px] text-beige-500 mt-1">
+                Max recommended: 7 days. Longer links are less secure.
+              </div>
+            </div>
+
+            {!generatedShareUrl ? (
+              <button
+                onClick={handleGenerateShareLink}
+                disabled={isGeneratingShare}
+                className="btn btn-primary w-full"
+              >
+                {isGeneratingShare ? 'Generating...' : 'Generate shareable link'}
+              </button>
+            ) : (
+              <div>
+                <label className="block text-sm font-medium mb-1.5">Share this link</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={generatedShareUrl}
+                    readOnly
+                    className="input flex-1 text-xs font-mono"
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                  />
+                  <button onClick={copyShareUrl} className="btn btn-secondary text-xs px-3">
+                    Copy
+                  </button>
+                </div>
+                <div className="text-[10px] text-beige-500 mt-2">
+                  This link will expire in {Math.floor(shareExpirySeconds / 60)} minutes.
+                  Anyone with the link can download the file.
+                </div>
+                <button
+                  onClick={() => {
+                    setGeneratedShareUrl('')
+                  }}
+                  className="btn btn-secondary w-full mt-3 text-xs"
+                >
+                  Generate new link
+                </button>
+              </div>
+            )}
+
+            <div className="mt-4 text-[10px] text-beige-500">
+              The recipient does not need an account. They can download directly using this temporary link.
             </div>
           </div>
         </div>
