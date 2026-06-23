@@ -1,0 +1,138 @@
+# Family Storage
+
+A minimalistic modern file browser for MinIO.
+
+- Single Go binary that embeds the React frontend
+- Uses AWS SDK v3 for S3 (in-browser, MinIO compatible) for listing, upload, and downloads
+- Authentication with MinIO access key / secret key (never embedded)
+- Clean white + beige design
+- Drag & drop uploads, downloads, basic folder navigation
+- Image previews generated + cached by the Go backend
+
+
+## Requirements
+
+- Node.js 20+
+- Go 1.22+
+- MinIO running at `127.0.0.1:7000` (or anywhere reachable)
+
+Default credentials used in examples: `minioadmin` / `minioadmin`
+
+## Project Structure
+
+```
+.
+├── frontend/          # Vite + React + Tailwind + minio SDK
+├── backend/           # Go server (embeds frontend + preview API)
+└── README.md
+```
+
+## Running (Recommended - Single Binary)
+
+The Go backend now embeds the built React frontend and serves everything from a single port.
+
+### 1. Build the frontend
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+This produces static files in `frontend/dist`.
+
+### 2. Run the Go server
+
+```bash
+cd ../backend
+go run main.go
+```
+
+- The server listens on `:8080` by default.
+- Use `--address` (or `-a`) to change it:
+  ```bash
+  go run main.go --address 0.0.0.0:8080
+  go run main.go -a :9000
+  ```
+- You can also use the `ADDRESS` env var, or the legacy `PORT` env var.
+- Image preview cache lives in `./previews` (override with `PREVIEW_CACHE_DIR`)
+- Open the address you configured (e.g. **http://localhost:8080**)
+
+### 3. Login
+
+- **MinIO Endpoint**: `127.0.0.1:7000`
+- Access Key / Secret Key
+- **Preview Service**: leave **blank** (uses same origin)
+
+Click **Connect to MinIO**.
+
+The React app and the preview API are now served from the same origin, so no separate frontend port is needed.
+
+## Important: CORS (for MinIO)
+
+The React app uses the AWS SDK for S3 **directly from the browser** (MinIO is S3-compatible) to talk to your MinIO server for listing, uploading, and downloading.
+
+You must configure CORS on MinIO for the origin where the app is served (e.g. `http://localhost:8080`).
+
+### Using `mc` (recommended):
+
+```bash
+mc alias set local http://127.0.0.1:7000 minioadmin minioadmin
+
+# Allow the origin serving the app
+mc admin config set local api cors_allow_origin 'http://localhost:8080'
+
+mc admin service restart local
+```
+
+During development you can temporarily allow everything:
+
+```bash
+mc admin config set local api cors_allow_origin '*'
+mc admin service restart local
+```
+
+## Features
+
+- Browse buckets + navigate "folders" (prefixes)
+- Upload (button + drag & drop)
+- Download via presigned URLs
+- Delete objects
+- Real image thumbnails (via Go service + disk cache)
+- Full-size image preview modal
+- Search within current view
+- Clean responsive grid
+
+## Architecture Notes
+
+- The Go binary embeds the React frontend (single deployable artifact)
+- Credentials live only in React component state (gone on refresh)
+- Preview generation + caching is handled server-side in Go
+- The browser uses AWS SDK v3 (S3) to talk directly to MinIO for uploads, downloads, and object listing
+- When "Preview Service" is left blank, the frontend calls `/preview` on the same origin
+
+## Customization
+
+- Preview width is currently hardcoded to 280px in thumbnails and 320px default on server
+- Beige palette is defined in `frontend/tailwind.config.js`
+
+## Development Tips
+
+### Quick dev loop (embedded)
+
+```bash
+cd frontend && npm run build
+cd ../backend && go run main.go
+```
+
+### Using separate frontend (advanced)
+
+You can still run `npm run dev` in `frontend/` against a running Go backend.  
+Just enter the full preview URL (e.g. `http://localhost:8080` or whatever address you used) in the login form.
+
+### Other
+
+- `go run` will fail with a clear message if `frontend/dist` is missing
+- If you get connection issues: check the MinIO endpoint (host:port, no protocol) and MinIO CORS settings
+
+Enjoy your files!

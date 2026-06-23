@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/vendor/
+
+# Build
+dist/
+frontend/dist/
+backend/static/
+*.exe
+/tmp/
+
+# Previews cache
+backend/previews/
+previews/
+
+# Env / local
+.env
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
