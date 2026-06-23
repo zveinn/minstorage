@@ -257,6 +257,10 @@ function App() {
     done: number
     total: number
   } | null>(null)
+  const [adminForm, setAdminForm] = useState({ username: '', password: '', confirmPassword: '' })
+  const [adminLoading, setAdminLoading] = useState(false)
+  const [adminError, setAdminError] = useState('')
+  const [showAdminModal, setShowAdminModal] = useState(false)
 
   // Folder hierarchy for the selected bucket (left sidebar)
   const [prefixChildren, setPrefixChildren] = useState<Record<string, string[]>>({})
@@ -395,6 +399,41 @@ function App() {
     setPrefixChildren({})
     setExpandedPrefixes(new Set())
     toast.info('Disconnected')
+  }
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!creds) return
+    if (adminForm.password !== adminForm.confirmPassword) {
+      setAdminError('Passwords do not match')
+      return
+    }
+    setAdminLoading(true)
+    setAdminError('')
+    try {
+      const res = await fetch('/admin/create-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Minio-Endpoint': creds.endpoint,
+          'X-Minio-Access-Key': creds.accessKey,
+          'X-Minio-Secret-Key': creds.secretKey,
+          'X-Minio-Use-SSL': String(creds.useSSL),
+        },
+        body: JSON.stringify(adminForm),
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || 'Failed to create user')
+      }
+      toast.success('User and bucket created successfully')
+      setAdminForm({ username: '', password: '', confirmPassword: '' })
+      setShowAdminModal(false)
+    } catch (err: any) {
+      setAdminError(err.message || 'Failed to create user')
+    } finally {
+      setAdminLoading(false)
+    }
   }
 
   const selectBucket = useCallback(async (
@@ -1153,7 +1192,7 @@ function App() {
     )
   }
 
-  // MAIN UI
+  // MAIN UI (logged in)
   return (
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
@@ -1173,6 +1212,9 @@ function App() {
             <div className="px-3 py-1 rounded-full bg-beige-100 text-beige-700 text-xs font-medium">
               {creds?.endpoint}
             </div>
+            <button onClick={() => { setAdminError(''); setShowAdminModal(true) }} className="btn btn-secondary text-sm py-1.5 px-3.5 gap-2">
+              Admin
+            </button>
             <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-3.5 gap-2">
               <LogOut size={15} /> Disconnect
             </button>
@@ -1181,8 +1223,8 @@ function App() {
       </header>
 
       <div className="flex flex-1 w-full">
-        {/* Sidebar */}
-        <div className="w-48 sm:w-56 md:w-64 border-r border-beige-200 bg-white p-3 sm:p-4 flex flex-col">
+          {/* Sidebar */}
+          <div className="w-48 sm:w-56 md:w-64 border-r border-beige-200 bg-white p-3 sm:p-4 flex flex-col">
           <div className="flex items-center justify-between px-1 mb-3">
             <div className="uppercase text-xs tracking-[1px] font-semibold text-beige-600">Buckets</div>
             <button onClick={refresh} className="btn-ghost p-1.5 rounded-md" title="Refresh">
@@ -1342,7 +1384,7 @@ function App() {
             ) : (
               <>
                 <div className="mb-5 border border-dashed border-beige-300 rounded-2xl bg-white/60 py-3 text-center text-sm text-beige-700">
-                  Drop files or folders here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
+                  Drop files here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
                 </div>
 
                 {currentUpload && (
@@ -1502,6 +1544,61 @@ function App() {
         </div>
       </div>
 
+      {/* Admin Modal */}
+      {showAdminModal && (
+        <div className="modal" onClick={() => setShowAdminModal(false)}>
+          <div className="modal-content w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold">Create New User</h2>
+              <button onClick={() => { setShowAdminModal(false); setAdminError(''); setAdminForm({ username: '', password: '', confirmPassword: '' }) }} className="btn btn-ghost text-sm">Close</button>
+            </div>
+
+            <form onSubmit={handleCreateUser} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1.5">Username</label>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="newuser"
+                  value={adminForm.username}
+                  onChange={(e) => setAdminForm({ ...adminForm, username: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1.5">Password</label>
+                <input
+                  type="password"
+                  className="input"
+                  value={adminForm.password}
+                  onChange={(e) => setAdminForm({ ...adminForm, password: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1.5">Confirm Password</label>
+                <input
+                  type="password"
+                  className="input"
+                  value={adminForm.confirmPassword}
+                  onChange={(e) => setAdminForm({ ...adminForm, confirmPassword: e.target.value })}
+                  required
+                />
+              </div>
+
+              {adminError && <div className="text-red-500 text-sm">{adminError}</div>}
+
+              <button type="submit" disabled={adminLoading} className="btn btn-primary w-full">
+                {adminLoading ? 'Creating...' : 'Create User & Bucket'}
+              </button>
+            </form>
+
+            <p className="text-xs text-beige-600 mt-4">
+              Creates a private versioned bucket for the user + full access to the "shared" bucket. The user will only have access to their bucket and "shared".
+            </p>
+          </div>
+        </div>
+      )}
       {/* Preview Modal */}
       {previewItem && previewUrl && (
         <div className="modal" onClick={closePreview}>

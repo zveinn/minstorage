@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -15,12 +16,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	madmin "github.com/minio/madmin-go/v3"
 )
 
 //go:embed all:static
@@ -64,6 +67,7 @@ func main() {
 			w.Write([]byte("ok"))
 		})
 		r.Get("/preview", previewHandler)
+		r.Post("/admin/create-user", adminCreateUserHandler)
 	})
 
 	// Serve the embedded React frontend (SPA)
@@ -198,7 +202,7 @@ func normalizeMinioAddress(addr string) string {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Minio-Endpoint, X-Minio-Access-Key, X-Minio-Secret-Key, X-Minio-Use-SSL")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -378,6 +382,14 @@ func newMinioClient(endpoint, accessKey, secretKey string, useSSL bool) (*minio.
 	return client, nil
 }
 
+func newMadminClient(endpoint, accessKey, secretKey string, useSSL bool) (*madmin.AdminClient, error) {
+	client, err := madmin.New(endpoint, accessKey, secretKey, useSSL)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
 func getHeader(r *http.Request, key, fallback string) string {
 	if v := r.Header.Get(key); v != "" {
 		return v
@@ -416,5 +428,182 @@ func spaFileServer(fsys fs.FS) http.HandlerFunc {
 	}
 }
 
+// adminCreateUserHandler creates a new MinIO user with their own bucket (versioned) + access to "shared"
+func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 
+	var req struct {
+		Username        string `json:"username"`
+		Password        string `json:"password"`
+		ConfirmPassword string `json:"confirmPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == "" || req.Password == "" || req.Password != req.ConfirmPassword {
+		http.Error(w, "username and matching passwords are required", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve MinIO address and credentials for backend use.
+	// Prefer --minio / --user / --pass (or MINIO_* env) so the backend dials an address
+	// it can actually reach (e.g. 127.0.0.1 or internal name), not the browser's view of the endpoint.
+	backendMinioAddr := resolveMinioAddress()
+	usingBackendMinio := backendMinioAddr != ""
+
+	minioEndpoint := backendMinioAddr
+	if minioEndpoint == "" {
+		minioEndpoint = getHeader(r, "X-Minio-Endpoint", "")
+	}
+
+	accessKey, secretKey := resolveMinioCredentials()
+	usingBackendCreds := accessKey != "" && secretKey != ""
+
+	if !usingBackendCreds && !usingBackendMinio {
+		// Legacy fallback only when no backend MinIO config at all
+		accessKey = getHeader(r, "X-Minio-Access-Key", "")
+		secretKey = getHeader(r, "X-Minio-Secret-Key", "")
+	}
+
+	useSSL := strings.ToLower(getHeader(r, "X-Minio-Use-SSL", "false")) == "true"
+
+	log.Printf("[admin-create-user] request: username=%q endpoint=%q useSSL=%v usingBackendMinio=%v usingBackendCreds=%v",
+		req.Username, minioEndpoint, useSSL, usingBackendMinio, usingBackendCreds)
+
+	if minioEndpoint == "" || accessKey == "" || secretKey == "" {
+		log.Printf("[admin-create-user] error: missing minio endpoint or credentials")
+		http.Error(w, "missing minio admin credentials (provide via headers or backend --minio/--user/--pass)", http.StatusUnauthorized)
+		return
+	}
+
+	minioClient, err := newMinioClient(minioEndpoint, accessKey, secretKey, useSSL)
+	if err != nil {
+		log.Printf("[admin-create-user] error: failed to create minio client for %s: %v", minioEndpoint, err)
+		http.Error(w, "failed to connect to minio: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	log.Printf("[admin-create-user] minio client created for endpoint=%s", minioEndpoint)
+
+	mdm, err := newMadminClient(minioEndpoint, accessKey, secretKey, useSSL)
+	if err != nil {
+		log.Printf("[admin-create-user] error: failed to create madmin client for %s: %v", minioEndpoint, err)
+		http.Error(w, "failed to connect to minio admin: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	log.Printf("[admin-create-user] madmin client created for endpoint=%s", minioEndpoint)
+
+	// 1. Fail if user's bucket already exists
+	log.Printf("[admin-create-user] checking if bucket %q exists...", req.Username)
+	t := time.Now()
+	exists, err := minioClient.BucketExists(ctx, req.Username)
+	log.Printf("[admin-create-user] BucketExists(%q) took %v, exists=%v, err=%v", req.Username, time.Since(t), exists, err)
+	if err != nil {
+		http.Error(w, "failed to check bucket existence: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[admin-create-user] bucket %q exists=%v", req.Username, exists)
+	if exists {
+		http.Error(w, "bucket already exists", http.StatusConflict)
+		return
+	}
+
+	// 2. Create user's bucket + enable versioning
+	log.Printf("[admin-create-user] creating bucket %q", req.Username)
+	t = time.Now()
+	err = minioClient.MakeBucket(ctx, req.Username, minio.MakeBucketOptions{})
+	log.Printf("[admin-create-user] MakeBucket(%q) took %v, err=%v", req.Username, time.Since(t), err)
+	if err != nil {
+		http.Error(w, "failed to create bucket: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[admin-create-user] bucket %q created, enabling versioning", req.Username)
+	t = time.Now()
+	err = minioClient.SetBucketVersioning(ctx, req.Username, minio.BucketVersioningConfiguration{Status: "Enabled"})
+	log.Printf("[admin-create-user] SetBucketVersioning(%q) took %v, err=%v", req.Username, time.Since(t), err)
+	if err != nil {
+		log.Printf("[admin-create-user] warning: could not enable versioning on %s: %v", req.Username, err)
+	}
+
+	// 3. Ensure "shared" bucket exists + versioning
+	log.Printf("[admin-create-user] ensuring shared bucket exists and is versioned")
+	t = time.Now()
+	sharedExists, err := minioClient.BucketExists(ctx, "shared")
+	log.Printf("[admin-create-user] BucketExists(shared) took %v, exists=%v, err=%v", time.Since(t), sharedExists, err)
+	if err != nil {
+		http.Error(w, "failed to check shared bucket: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !sharedExists {
+		log.Printf("[admin-create-user] creating shared bucket")
+		t = time.Now()
+		err = minioClient.MakeBucket(ctx, "shared", minio.MakeBucketOptions{})
+		log.Printf("[admin-create-user] MakeBucket(shared) took %v, err=%v", time.Since(t), err)
+		if err != nil {
+			http.Error(w, "failed to create shared bucket: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	t = time.Now()
+	err = minioClient.SetBucketVersioning(ctx, "shared", minio.BucketVersioningConfiguration{Status: "Enabled"})
+	log.Printf("[admin-create-user] SetBucketVersioning(shared) took %v, err=%v", time.Since(t), err)
+	if err != nil {
+		log.Printf("[admin-create-user] warning: could not enable versioning on shared: %v", err)
+	}
+
+	// 4. Create policy that gives full access only to own bucket + shared
+	policyName := "policy-" + req.Username
+	policyDoc := fmt.Sprintf(`{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Action": ["s3:*"],
+				"Resource": [
+					"arn:aws:s3:::%s",
+					"arn:aws:s3:::%s/*",
+					"arn:aws:s3:::shared",
+					"arn:aws:s3:::shared/*"
+				]
+			}
+		]
+	}`, req.Username, req.Username)
+
+	log.Printf("[admin-create-user] creating policy %q", policyName)
+	t = time.Now()
+	err = mdm.AddCannedPolicy(ctx, policyName, []byte(policyDoc))
+	log.Printf("[admin-create-user] AddCannedPolicy(%q) took %v, err=%v", policyName, time.Since(t), err)
+	if err != nil {
+		http.Error(w, "failed to create policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[admin-create-user] policy %q created", policyName)
+
+	// 5. Create the user
+	log.Printf("[admin-create-user] creating user %q", req.Username)
+	t = time.Now()
+	err = mdm.AddUser(ctx, req.Username, req.Password)
+	log.Printf("[admin-create-user] AddUser(%q) took %v, err=%v", req.Username, time.Since(t), err)
+	if err != nil {
+		http.Error(w, "failed to create user: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[admin-create-user] user %q created", req.Username)
+
+	// 6. Attach the policy to the user
+	log.Printf("[admin-create-user] attaching policy %q to user %q", policyName, req.Username)
+	t = time.Now()
+	err = mdm.SetPolicy(ctx, policyName, req.Username, false)
+	log.Printf("[admin-create-user] SetPolicy(%q -> %q) took %v, err=%v", policyName, req.Username, time.Since(t), err)
+	if err != nil {
+		http.Error(w, "failed to attach policy to user: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[admin-create-user] policy attached successfully")
+
+	w.WriteHeader(http.StatusCreated)
+	w.Write([]byte(`{"message":"user and bucket created successfully"}`))
+	log.Printf("[admin-create-user] success for username=%q", req.Username)
+}
 
