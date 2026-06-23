@@ -3,13 +3,13 @@ import {
   S3Client,
   ListBucketsCommand,
   ListObjectsV2Command,
-  PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
 } from '@aws-sdk/client-s3'
+import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
-  Upload, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
+  Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
   LogOut, Search, ChevronRight, Home, X
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -212,6 +212,42 @@ function App() {
 
   const isLoggedIn = !!creds && !!client
 
+  const STORAGE_KEY = 'FAMILY_STORAGE_CREDS'
+
+  // Restore credentials from sessionStorage on mount
+  useEffect(() => {
+    const stored = sessionStorage.getItem(STORAGE_KEY)
+    if (!stored) return
+
+    try {
+      const parsed: Credentials = JSON.parse(stored)
+      const s3Client = getS3Client(parsed)
+
+      setCreds(parsed)
+      setClient(s3Client)
+
+      // Try to restore buckets and auto-select first one (like after login)
+      listBuckets(s3Client)
+        .then((bucketList) => {
+          setBuckets(bucketList)
+          if (bucketList.length > 0) {
+            selectBucket(bucketList[0], s3Client, parsed).catch(() => {})
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to restore MinIO session:', err)
+          // Stored credentials are no longer valid
+          sessionStorage.removeItem(STORAGE_KEY)
+          setCreds(null)
+          setClient(null)
+          setBuckets([])
+        })
+    } catch (e) {
+      console.error('Invalid stored credentials')
+      sessionStorage.removeItem(STORAGE_KEY)
+    }
+  }, []) // run only once on mount
+
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
       toast.error('Please enter access key and secret key')
@@ -243,6 +279,10 @@ function App() {
       } else {
         toast('Connected. No buckets found.')
       }
+
+      // Persist to sessionStorage so refresh doesn't require re-login
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(newCreds))
+
       toast.success('Connected to MinIO')
     } catch (err: any) {
       console.error(err)
@@ -251,6 +291,7 @@ function App() {
   }
 
   const disconnect = () => {
+    sessionStorage.removeItem(STORAGE_KEY)
     setCreds(null)
     setClient(null)
     setBuckets([])
@@ -372,14 +413,17 @@ function App() {
       try {
         setUploadQueue(q => q.map(u => u.name === file.name ? { ...u, progress: 10 } : u))
 
-        await client.send(
-          new PutObjectCommand({
+        const upload = new Upload({
+          client,
+          params: {
             Bucket: selectedBucket,
             Key: objectName,
             Body: file,
             ContentType: file.type || 'application/octet-stream',
-          })
-        )
+          },
+        })
+
+        await upload.done()
 
         setUploadQueue(q => q.map(u => u.name === file.name ? { ...u, progress: 100 } : u))
         toast.success(`Uploaded ${file.name}`)
@@ -582,7 +626,7 @@ function App() {
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
       <header className="border-b border-beige-200 bg-white/80 backdrop-blur sticky top-0 z-50">
-        <div className="max-w-[1280px] mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-beige-300 flex items-center justify-center">
               <Folder size={20} className="text-beige-700" />
@@ -604,9 +648,9 @@ function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 max-w-[1280px] mx-auto w-full">
+      <div className="flex flex-1 w-full">
         {/* Sidebar */}
-        <div className="w-64 border-r border-beige-200 bg-white p-4 flex flex-col">
+        <div className="w-48 sm:w-56 md:w-64 border-r border-beige-200 bg-white p-3 sm:p-4 flex flex-col">
           <div className="flex items-center justify-between px-1 mb-3">
             <div className="uppercase text-xs tracking-[1px] font-semibold text-beige-600">Buckets</div>
             <button onClick={refresh} className="btn-ghost p-1.5 rounded-md" title="Refresh">
@@ -641,7 +685,7 @@ function App() {
 
         {/* Main */}
         <div className="flex-1 flex flex-col min-w-0">
-          <div className="h-14 border-b border-beige-200 bg-white flex items-center px-6 gap-3">
+          <div className="h-14 border-b border-beige-200 bg-white flex items-center px-4 sm:px-6 gap-3">
             <div className="flex items-center gap-2 flex-1 min-w-0">
               {selectedBucket && (
                 <div className="flex items-center gap-1 text-sm">
@@ -661,7 +705,7 @@ function App() {
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="relative w-64">
+              <div className="relative w-48 sm:w-64">
                 <input
                   type="text"
                   value={search}
@@ -673,7 +717,7 @@ function App() {
               </div>
 
               <label className="btn btn-primary cursor-pointer">
-                <Upload size={16} />
+                <UploadIcon size={16} />
                 Upload
                 <input
                   type="file"
@@ -693,7 +737,7 @@ function App() {
           </div>
 
           <div
-            className="flex-1 p-6 overflow-auto"
+            className="flex-1 p-4 sm:p-6 overflow-auto"
             onDrop={handleDrop}
             onDragOver={handleDragOver}
           >
@@ -725,7 +769,7 @@ function App() {
                 )}
 
                 {loading ? (
-                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
                     {Array.from({ length: 8 }).map((_, i) => (
                       <div key={i} className="card h-52 animate-pulse bg-beige-100" />
                     ))}
@@ -735,7 +779,7 @@ function App() {
                     {search ? 'No matching files' : 'This folder is empty'}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
                     {filteredItems.map((item, index) => (
                       <div key={index} className="file-item card overflow-hidden flex flex-col group">
                         {item.isDir ? (
