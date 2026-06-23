@@ -6,12 +6,13 @@ import {
   ListObjectVersionsCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  PutObjectCommand,
 } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link
+  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -1113,6 +1114,36 @@ function App() {
   }
   // --- end folder helpers ---
 
+  const createFolder = async () => {
+    if (!selectedBucket || !client) return
+
+    const folderName = prompt('Folder name:')
+    if (!folderName || !folderName.trim()) return
+
+    const name = folderName.trim()
+    if (name.includes('/')) {
+      toast.error('Folder name cannot contain /')
+      return
+    }
+
+    const key = `${currentPrefix}${name}/`
+
+    try {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: selectedBucket,
+          Key: key,
+          Body: '',
+        })
+      )
+      toast.success(`Created folder "${name}"`)
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+      loadPrefixChildren(selectedBucket, currentPrefix)
+    } catch (err: any) {
+      toast.error('Failed to create folder: ' + (err.message || ''))
+    }
+  }
+
   const downloadFile = async (item: FileItem) => {
     if (!selectedBucket || !client) return
 
@@ -1505,6 +1536,12 @@ function App() {
                 {showDeleted ? <EyeOff size={14} /> : <Eye size={14} />}
                 {showDeleted ? 'Hide deleted' : 'Show deleted'}
               </button>
+
+              {selectedBucket && (
+                <button onClick={createFolder} className="btn btn-secondary">
+                  <FolderPlus size={16} /> Create folder
+                </button>
+              )}
 
               <label className="btn btn-primary cursor-pointer">
                 <UploadIcon size={16} />
