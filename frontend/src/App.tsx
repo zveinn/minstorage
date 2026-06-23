@@ -3,6 +3,7 @@ import {
   S3Client,
   ListBucketsCommand,
   ListObjectsV2Command,
+  ListObjectVersionsCommand,
   DeleteObjectCommand,
   GetObjectCommand,
 } from '@aws-sdk/client-s3'
@@ -10,7 +11,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, Search, ChevronRight, Home, X, Check
+  LogOut, Search, ChevronRight, Home, X, Check, Eye, EyeOff
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -32,6 +33,7 @@ interface FileItem {
   size: number
   lastModified?: Date
   isDir: boolean
+  isDeleted?: boolean
 }
 
 interface UploadProgress {
@@ -72,9 +74,37 @@ function getS3Client(creds: Credentials) {
 async function listObjectsWithPrefix(
   client: S3Client,
   bucket: string,
-  prefix: string
+  prefix: string,
+  showDeleted: boolean = false
 ): Promise<{ files: any[]; prefixes: string[] }> {
-  const command = new ListObjectsV2Command({
+  if (!showDeleted) {
+    const command = new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+      Delimiter: '/',
+    })
+
+    const response = await client.send(command)
+
+    const prefixes = (response.CommonPrefixes || [])
+      .map((p) => p.Prefix!)
+      .filter(Boolean)
+
+    const files = (response.Contents || [])
+      .filter((obj) => obj.Key && obj.Key !== prefix)
+      .map((obj) => ({
+        name: obj.Key!,
+        size: obj.Size || 0,
+        etag: obj.ETag || '',
+        lastModified: obj.LastModified,
+        isDeleted: false,
+      }))
+
+    return { files, prefixes }
+  }
+
+  // Show deleted: use versions + delete markers
+  const command = new ListObjectVersionsCommand({
     Bucket: bucket,
     Prefix: prefix,
     Delimiter: '/',
@@ -86,14 +116,33 @@ async function listObjectsWithPrefix(
     .map((p) => p.Prefix!)
     .filter(Boolean)
 
-  const files = (response.Contents || [])
-    .filter((obj) => obj.Key && obj.Key !== prefix)
-    .map((obj) => ({
-      name: obj.Key!,
-      size: obj.Size || 0,
-      etag: obj.ETag || '',
-      lastModified: obj.LastModified,
-    }))
+  const files: any[] = []
+
+  // Add current versions (non-deleted latest objects)
+  ;(response.Versions || []).forEach((obj: any) => {
+    if (obj.Key && obj.Key !== prefix && obj.IsLatest) {
+      files.push({
+        name: obj.Key!,
+        size: obj.Size || 0,
+        etag: obj.ETag || '',
+        lastModified: obj.LastModified,
+        isDeleted: false,
+      })
+    }
+  })
+
+  // Add delete markers as deleted items
+  ;(response.DeleteMarkers || []).forEach((dm: any) => {
+    if (dm.Key && dm.Key !== prefix && dm.IsLatest) {
+      files.push({
+        name: dm.Key!,
+        size: 0,
+        etag: '',
+        lastModified: dm.LastModified,
+        isDeleted: true,
+      })
+    }
+  })
 
   return { files, prefixes }
 }
@@ -203,6 +252,7 @@ function App() {
   const [items, setItems] = useState<FileItem[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
+  const [showDeleted, setShowDeleted] = useState(false)
   const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([])
 
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
@@ -343,21 +393,22 @@ function App() {
     setCurrentPrefix('')
     setSearch('')
     clearSelection()
-    await loadObjects(bucket, '', activeClient, activeCreds)
-  }, [client, creds])
+    await loadObjects(bucket, '', activeClient, activeCreds, showDeleted)
+  }, [client, creds, showDeleted])
 
-  const loadObjects = async (
+  async function loadObjects(
     bucket: string,
     prefix: string,
     c?: S3Client,
-    _cr?: Credentials
-  ) => {
+    _cr?: Credentials,
+    showDel: boolean = showDeleted
+  ) {
     const activeClient = c || client
     if (!activeClient) return
 
     setLoading(true)
     try {
-      const { files, prefixes } = await listObjectsWithPrefix(activeClient, bucket, prefix)
+      const { files, prefixes } = await listObjectsWithPrefix(activeClient, bucket, prefix, showDel)
 
       const fileItems: FileItem[] = [
         ...prefixes.map(p => ({
@@ -374,6 +425,7 @@ function App() {
             size: f.size,
             lastModified: f.lastModified,
             isDir: false,
+            isDeleted: f.isDeleted || false,
           })),
       ]
 
@@ -386,12 +438,19 @@ function App() {
     }
   }
 
+  // Reload listing when showDeleted changes
+  useEffect(() => {
+    if (selectedBucket && client && creds) {
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+    }
+  }, [showDeleted])
+
   const navigateTo = (prefix: string) => {
     if (!selectedBucket || !client || !creds) return
     setCurrentPrefix(prefix)
     setSearch('')
     clearSelection()
-    loadObjects(selectedBucket, prefix, client, creds)
+    loadObjects(selectedBucket, prefix, client, creds, showDeleted)
   }
 
   const goHome = () => {
@@ -445,7 +504,7 @@ function App() {
   const downloadSelectedItems = async () => {
     if (selectedItems.size === 0) return
     const paths = Array.from(selectedItems)
-    const toDownload = items.filter(i => paths.includes(i.fullPath) && !i.isDir)
+    const toDownload = items.filter(i => paths.includes(i.fullPath) && !i.isDir && !i.isDeleted)
 
     if (toDownload.length === 0) {
       clearSelection()
@@ -610,7 +669,7 @@ function App() {
     setTimeout(() => {
       setUploadQueue([])
       if (selectedBucket && client && creds) {
-        loadObjects(selectedBucket, currentPrefix, client, creds)
+        loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
       }
     }, 650)
   }
@@ -673,7 +732,7 @@ function App() {
         })
       )
       toast.success(`Deleted ${item.name}`)
-      loadObjects(selectedBucket, currentPrefix, client, creds)
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
     } catch (err: any) {
       toast.error('Delete failed: ' + err.message)
     }
@@ -714,7 +773,7 @@ function App() {
 
   const refresh = () => {
     if (selectedBucket && client && creds) {
-      loadObjects(selectedBucket, currentPrefix, client, creds)
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
     }
   }
 
@@ -933,6 +992,15 @@ function App() {
                 </div>
               )}
 
+              <button
+                onClick={() => setShowDeleted(!showDeleted)}
+                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-xs py-1 px-2 flex items-center gap-1`}
+                title={showDeleted ? 'Hide deleted photos' : 'Show deleted photos (including delete markers)'}
+              >
+                {showDeleted ? <EyeOff size={14} /> : <Eye size={14} />}
+                {showDeleted ? 'Hide deleted' : 'Show deleted'}
+              </button>
+
               <label className="btn btn-primary cursor-pointer">
                 <UploadIcon size={16} />
                 Upload
@@ -1003,7 +1071,7 @@ function App() {
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
                     {filteredItems.map((item, index) => (
-                      <div key={index} className="file-item card overflow-hidden flex flex-col group" data-fullpath={item.fullPath} data-isdir={item.isDir ? 'true' : 'false'}>
+                      <div key={index} className={`file-item card overflow-hidden flex flex-col group ${item.isDeleted ? 'opacity-60' : ''}`} data-fullpath={item.fullPath} data-isdir={item.isDir ? 'true' : 'false'}>
                         {item.isDir ? (
                           <button onClick={() => navigateTo(item.fullPath)} className="flex-1 p-3 flex flex-col">
                             <div className="thumbnail w-full h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
@@ -1022,7 +1090,7 @@ function App() {
                                 onClick={() => {
                                   if (isInSelectMode) {
                                     toggleSelect(item.fullPath)
-                                  } else {
+                                  } else if (!item.isDeleted) {
                                     isImage(item.name) ? openPreview(item) : downloadFile(item)
                                   }
                                 }}
@@ -1046,7 +1114,11 @@ function App() {
                                   </div>
                                 </div>
 
-                                {isImage(item.name) && creds ? (
+                                {item.isDeleted ? (
+                                  <div className="thumbnail w-full h-40 bg-red-50 flex items-center justify-center">
+                                    <Trash2 size={42} className="text-red-400" />
+                                  </div>
+                                ) : isImage(item.name) && creds ? (
                                   <ObjectThumbnail
                                     bucket={selectedBucket}
                                     objectName={item.fullPath}
@@ -1061,17 +1133,19 @@ function App() {
 
                               {/* Hover action buttons - top right over the photo */}
                               <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all z-10">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
-                                  className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                  title="Download"
-                                >
-                                  <Download size={15} />
-                                </button>
+                                {!item.isDeleted && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
+                                    className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                    title="Download"
+                                  >
+                                    <Download size={15} />
+                                  </button>
+                                )}
                                 <button
                                   onClick={(e) => { e.stopPropagation(); deleteFile(item); }}
                                   className="bg-white/90 hover:bg-red-50 text-red-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                  title="Delete"
+                                  title={item.isDeleted ? "Permanently delete (remove marker)" : "Delete"}
                                 >
                                   <Trash2 size={15} />
                                 </button>
@@ -1084,13 +1158,14 @@ function App() {
                                 onClick={() => {
                                   if (isInSelectMode) {
                                     toggleSelect(item.fullPath)
-                                  } else {
+                                  } else if (!item.isDeleted) {
                                     isImage(item.name) ? openPreview(item) : downloadFile(item)
                                   }
                                 }}
-                                className="font-medium text-sm leading-tight truncate cursor-pointer hover:underline mb-1"
+                                className={`font-medium text-sm leading-tight truncate cursor-pointer hover:underline mb-1 ${item.isDeleted ? 'line-through text-red-400' : ''}`}
                               >
                                 {item.name}
+                                {item.isDeleted && <span className="ml-1 text-[9px] text-red-400">(deleted)</span>}
                               </div>
 
                               <div className="flex items-center justify-between text-[10px] text-beige-600">
