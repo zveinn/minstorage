@@ -402,7 +402,7 @@ function App() {
     bucket: string,
     prefix: string,
     c?: S3Client,
-    _cr?: Credentials,
+    _cr?: Credentials | null,
     showDel: boolean = showDeleted
   ) {
     const activeClient = c || client
@@ -673,21 +673,67 @@ function App() {
     setSelectedItems(next)
   }
 
-  const uploadFiles = async (files: FileList | File[]) => {
-    if (!selectedBucket || !client || !creds) {
+  // --- Folder upload helpers ---
+  async function getFileFromEntry(fileEntry: any): Promise<File> {
+    return new Promise((resolve, reject) => {
+      fileEntry.file(resolve, reject)
+    })
+  }
+
+  async function readDirectoryEntries(dirReader: any): Promise<any[]> {
+    return new Promise((resolve) => {
+      dirReader.readEntries((entries: any[]) => resolve(entries))
+    })
+  }
+
+  async function getAllEntries(dirEntry: any): Promise<any[]> {
+    const reader = dirEntry.createReader()
+    let entries: any[] = []
+    let batch: any[]
+    do {
+      batch = await readDirectoryEntries(reader)
+      entries = entries.concat(batch)
+    } while (batch.length > 0)
+    return entries
+  }
+
+  async function processEntry(entry: any, results: { file: File; relativePath: string }[]) {
+    if (entry.isFile) {
+      const file = await getFileFromEntry(entry)
+      let path = entry.fullPath || entry.name
+      if (path.startsWith('/')) path = path.substring(1)
+      results.push({ file, relativePath: path })
+    } else if (entry.isDirectory) {
+      const children = await getAllEntries(entry)
+      for (const child of children) {
+        await processEntry(child, results)
+      }
+    }
+  }
+
+  function getStorageKey(relativePath: string): string {
+    const parts = relativePath.split('/').filter(Boolean)
+    if (parts.length === 0) return ''
+    const fileName = parts.pop()!
+    const dir = parts.length > 0 ? parts.join('/') + '/' : ''
+    const mangled = makeStorageName(fileName)
+    return dir + mangled
+  }
+
+  const uploadFilesWithStructure = async (
+    entries: { file: File; relativePath: string }[]
+  ) => {
+    if (!selectedBucket || !client) {
       toast.error('Select a bucket first')
       return
     }
 
-    const fileArray = Array.from(files)
-    if (fileArray.length === 0) return
-
-    const total = fileArray.length
+    const total = entries.length
     let done = 0
 
-    for (const file of fileArray) {
-      const storageName = makeStorageName(file.name)
-      const objectName = currentPrefix + storageName
+    for (const { file, relativePath } of entries) {
+      const objectName = currentPrefix + getStorageKey(relativePath)
+      const displayName = relativePath.split('/').pop() || relativePath
 
       try {
         const upload = new Upload({
@@ -716,7 +762,7 @@ function App() {
             lastTime = now
           }
           setCurrentUpload({
-            name: file.name,
+            name: displayName,
             percent,
             speed: parseFloat(speed.toFixed(1)),
             done,
@@ -728,16 +774,16 @@ function App() {
 
         done++
         setCurrentUpload({
-          name: file.name,
+          name: displayName,
           percent: 100,
           speed: 0,
           done,
           total,
         })
-        toast.success(`Uploaded ${file.name}`)
+        toast.success(`Uploaded ${displayName}`)
       } catch (err: any) {
         console.error(err)
-        toast.error(`Upload failed: ${file.name}`)
+        toast.error(`Upload failed: ${displayName}`)
       }
     }
 
@@ -748,6 +794,32 @@ function App() {
       }
     }, 650)
   }
+
+  const uploadFiles = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+    if (fileArray.length === 0) return
+
+    const entries = fileArray.map((f) => ({
+      file: f,
+      relativePath: (f as any).webkitRelativePath || f.name,
+    }))
+
+    await uploadFilesWithStructure(entries)
+  }
+
+  const handleFolderUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const fileArray = Array.from(e.target.files)
+      const entries = fileArray.map((f) => ({
+        file: f,
+        relativePath: (f as any).webkitRelativePath || f.name,
+      }))
+      uploadFilesWithStructure(entries).then(() => {
+        e.target.value = ''
+      })
+    }
+  }
+  // --- end folder helpers ---
 
   const downloadFile = async (item: FileItem) => {
     if (!selectedBucket || !client) return
@@ -835,10 +907,30 @@ function App() {
     setPreviewUrl(null)
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
+
+    const items = e.dataTransfer.items
+    if (items && items.length > 0) {
+      const results: { file: File; relativePath: string }[] = []
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        const entry = item.webkitGetAsEntry?.()
+        if (entry) {
+          await processEntry(entry, results)
+        }
+      }
+
+      if (results.length > 0) {
+        await uploadFilesWithStructure(results)
+        return
+      }
+    }
+
+    // fallback for plain files
     if (e.dataTransfer.files.length > 0) {
-      uploadFiles(e.dataTransfer.files)
+      await uploadFiles(e.dataTransfer.files)
     }
   }
 
@@ -1084,7 +1176,7 @@ function App() {
 
               <label className="btn btn-primary cursor-pointer">
                 <UploadIcon size={16} />
-                Upload
+                Upload files
                 <input
                   type="file"
                   multiple
@@ -1093,6 +1185,20 @@ function App() {
                     if (e.target.files) uploadFiles(e.target.files)
                     e.target.value = ''
                   }}
+                />
+              </label>
+
+              <label className="btn btn-secondary cursor-pointer">
+                <UploadIcon size={16} />
+                Upload folder
+                <input
+                  type="file"
+                  // @ts-ignore - webkit specific
+                  webkitdirectory=""
+                  directory=""
+                  multiple
+                  className="hidden"
+                  onChange={handleFolderUpload}
                 />
               </label>
 
@@ -1122,7 +1228,7 @@ function App() {
             ) : (
               <>
                 <div className="mb-5 border border-dashed border-beige-300 rounded-2xl bg-white/60 py-3 text-center text-sm text-beige-700">
-                  Drop files here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
+                  Drop files or folders here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
                 </div>
 
                 {currentUpload && (
