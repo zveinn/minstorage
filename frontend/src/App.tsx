@@ -559,6 +559,50 @@ function App() {
     clearSelection()
   }
 
+  const deleteSelectedItems = async () => {
+    if (selectedItems.size === 0) return
+    const paths = Array.from(selectedItems)
+    const toDelete = items.filter(i => paths.includes(i.fullPath) && !i.isDir)
+
+    if (toDelete.length === 0) {
+      clearSelection()
+      return
+    }
+
+    if (!confirm(`Delete ${toDelete.length} item(s)? This cannot be undone.`)) return
+
+    if (!selectedBucket || !client) {
+      toast.error('No bucket or client')
+      return
+    }
+
+    let count = 0
+    let errors = 0
+    for (const item of toDelete) {
+      try {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: selectedBucket,
+            Key: item.fullPath,
+          })
+        )
+        count++
+      } catch (err: any) {
+        console.error('Delete failed for', item.name, err)
+        errors++
+      }
+    }
+
+    if (count > 0) {
+      toast.success(`Deleted ${count} item(s)`)
+    }
+    if (errors > 0) {
+      toast.error(`Failed to delete ${errors} item(s)`)
+    }
+    clearSelection()
+    loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+  }
+
   const getPresignedDownloadUrl = async (item: FileItem): Promise<string> => {
     if (!selectedBucket || !client) throw new Error('No client')
     const command = new GetObjectCommand({
@@ -1016,6 +1060,12 @@ function App() {
                     className="btn btn-primary text-xs py-1 px-2"
                   >
                     Download selected
+                  </button>
+                  <button
+                    onClick={deleteSelectedItems}
+                    className="btn btn-secondary text-xs py-1 px-2 text-red-600 hover:bg-red-50"
+                  >
+                    Delete selected
                   </button>
                   <button onClick={clearSelection} className="btn btn-secondary text-xs py-1 px-2">
                     Clear
