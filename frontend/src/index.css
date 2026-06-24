@@ -30,7 +30,12 @@ body {
   min-height: 100vh;
 }
 
-/* Minimalistic clean components */
+/* Minimalistic clean components.
+   Wrapped in @layer components so Tailwind utility classes (padding, font-size,
+   etc.) reliably override these defaults — otherwise, being plain CSS declared
+   after @tailwind utilities, they'd win the cascade and silently kill all the
+   responsive sizing applied in markup. */
+@layer components {
 .btn {
   display: inline-flex;
   align-items: center;
@@ -161,4 +166,5 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
 }

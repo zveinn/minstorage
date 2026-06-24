@@ -12,9 +12,10 @@ import {
 } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
-  LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
+  LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
   LayoutGrid, List, Menu
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -70,6 +71,10 @@ function getS3Client(creds: Credentials) {
       secretAccessKey: creds.secretKey,
     },
     forcePathStyle: true,
+    // Use XMLHttpRequest instead of fetch so uploads emit real-time byte-level
+    // progress (the Fetch API has no upload progress events, which made the
+    // progress bar jump straight to 100% or never appear on slow connections).
+    requestHandler: new XhrHttpHandler({}),
   })
 }
 
@@ -291,6 +296,11 @@ function App() {
     done: number
     total: number
   } | null>(null)
+  const [currentDelete, setCurrentDelete] = useState<{
+    name: string
+    done: number
+    total: number
+  } | null>(null)
 
 
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
@@ -307,6 +317,24 @@ function App() {
   const [shareExpirySeconds, setShareExpirySeconds] = useState(3600) // default 1 hour
   const [generatedShareUrl, setGeneratedShareUrl] = useState<string>('')
   const [isGeneratingShare, setIsGeneratingShare] = useState(false)
+
+  // Confirm / prompt dialog state (replaces native window.confirm / window.prompt)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string
+    message: string
+    confirmLabel: string
+    cancelLabel: string
+    danger: boolean
+    resolve: (ok: boolean) => void
+  } | null>(null)
+  const [promptDialog, setPromptDialog] = useState<{
+    title: string
+    label: string
+    placeholder: string
+    value: string
+    confirmLabel: string
+    resolve: (value: string | null) => void
+  } | null>(null)
 
   // Note modal state
   const [noteModalOpen, setNoteModalOpen] = useState(false)
@@ -693,6 +721,15 @@ function App() {
   const contentRef = useRef<HTMLDivElement>(null)
 
   const isInSelectMode = selectedItems.size > 0
+  // Hint for the Delete button label. A file's delete is permanent when it's
+  // already deleted. A folder's state depends on its contents (resolved async at
+  // delete time), so we don't promise "forever" when folders are selected — the
+  // confirm dialog spells out the exact outcome.
+  const selectedDeleteIsForce = (() => {
+    if (!isInSelectMode) return false
+    const sel = items.filter(i => selectedItems.has(i.fullPath))
+    return sel.length > 0 && sel.every(i => !i.isDir && i.isDeleted)
+  })()
 
   const loadNotesForItems = async (itemsToLoad: FileItem[]) => {
     if (!selectedBucket || !client) return
@@ -736,6 +773,93 @@ function App() {
 
   const clearSelection = () => {
     setSelectedItems(new Set())
+  }
+
+  // Promise-based confirm/prompt backed by in-app modals (below). Replaces the
+  // native window.confirm / window.prompt so dialogs match the app's styling.
+  const askConfirm = (opts: {
+    title: string
+    message?: string
+    confirmLabel?: string
+    cancelLabel?: string
+    danger?: boolean
+  }): Promise<boolean> =>
+    new Promise((resolve) => {
+      setConfirmDialog({
+        title: opts.title,
+        message: opts.message ?? '',
+        confirmLabel: opts.confirmLabel ?? 'Confirm',
+        cancelLabel: opts.cancelLabel ?? 'Cancel',
+        danger: !!opts.danger,
+        resolve,
+      })
+    })
+
+  const resolveConfirm = (ok: boolean) => {
+    setConfirmDialog((d) => {
+      d?.resolve(ok)
+      return null
+    })
+  }
+
+  const askPrompt = (opts: {
+    title: string
+    label?: string
+    placeholder?: string
+    defaultValue?: string
+    confirmLabel?: string
+  }): Promise<string | null> =>
+    new Promise((resolve) => {
+      setPromptDialog({
+        title: opts.title,
+        label: opts.label ?? '',
+        placeholder: opts.placeholder ?? '',
+        value: opts.defaultValue ?? '',
+        confirmLabel: opts.confirmLabel ?? 'OK',
+        resolve,
+      })
+    })
+
+  const resolvePrompt = (value: string | null) => {
+    setPromptDialog((d) => {
+      d?.resolve(value)
+      return null
+    })
+  }
+
+  // Select every item (files and folders) in the current filtered view, across
+  // pages. Acts as a toggle: if they're all already selected, clear them.
+  const toggleSelectAll = () => {
+    const allPaths = filteredItems.map(i => i.fullPath)
+    if (allPaths.length === 0) return
+    const allSelected = allPaths.every(p => selectedItems.has(p))
+    setSelectedItems(allSelected ? new Set() : new Set(allPaths))
+  }
+
+  // True when every item in the current view is selected.
+  const allFilteredSelected = filteredItems.length > 0 && filteredItems.every(i => selectedItems.has(i.fullPath))
+
+  // Long-press to enter/extend selection on touch devices (no hover there to
+  // reveal the checkbox). After a long press fires we set a flag so the click
+  // that follows touchend doesn't also open/download the item.
+  const longPressTimer = useRef<number | null>(null)
+  const longPressFired = useRef(false)
+
+  const startLongPress = (fullPath: string) => {
+    longPressFired.current = false
+    cancelLongPress()
+    longPressTimer.current = window.setTimeout(() => {
+      longPressFired.current = true
+      toggleSelect(fullPath)
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(15)
+    }, 450)
+  }
+
+  const cancelLongPress = () => {
+    if (longPressTimer.current !== null) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
   }
 
   const downloadSelectedItems = async () => {
@@ -794,47 +918,176 @@ function App() {
     clearSelection()
   }
 
+  // Permanently remove every version of a key (all data versions + delete
+  // markers). This is the "force delete" — unlike a plain DeleteObject (which
+  // just adds another delete marker) it purges the object entirely.
+  const purgeAllVersions = async (key: string) => {
+    if (!selectedBucket || !client) throw new Error('No bucket or client')
+    let keyMarker: string | undefined
+    let versionIdMarker: string | undefined
+    let isTruncated = true
+    while (isTruncated) {
+      const resp: any = await client.send(
+        new ListObjectVersionsCommand({
+          Bucket: selectedBucket,
+          Prefix: key,
+          KeyMarker: keyMarker,
+          VersionIdMarker: versionIdMarker,
+        })
+      )
+      const versions = [...(resp.Versions || []), ...(resp.DeleteMarkers || [])]
+        // Prefix is not an exact match (e.g. "a" matches "ab"), so filter to the exact key.
+        .filter((v: any) => v.Key === key && v.VersionId)
+      for (const v of versions) {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: selectedBucket,
+            Key: key,
+            VersionId: v.VersionId,
+          })
+        )
+      }
+      isTruncated = !!resp.IsTruncated
+      keyMarker = resp.NextKeyMarker
+      versionIdMarker = resp.NextVersionIdMarker
+    }
+  }
+
+  // A folder counts as "soft-deleted" once it has no live objects left under it
+  // (everything is a delete marker). We detect that by asking for a single live
+  // object: empty means the folder is in the soft-deleted state.
+  const prefixHasLiveObjects = async (prefix: string): Promise<boolean> => {
+    if (!selectedBucket || !client) return false
+    const resp: any = await client.send(
+      new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: prefix, MaxKeys: 1 })
+    )
+    return (resp.Contents || []).length > 0
+  }
+
+  // Recursively delete everything under a folder prefix. force=false adds delete
+  // markers to the current objects (soft, recoverable); force=true purges every
+  // version + marker under the prefix (permanent).
+  const deleteObjectsUnderPrefix = async (prefix: string, force: boolean) => {
+    if (!selectedBucket || !client) throw new Error('No bucket or client')
+    if (force) {
+      let keyMarker: string | undefined
+      let versionIdMarker: string | undefined
+      let isTruncated = true
+      while (isTruncated) {
+        const resp: any = await client.send(
+          new ListObjectVersionsCommand({ Bucket: selectedBucket, Prefix: prefix, KeyMarker: keyMarker, VersionIdMarker: versionIdMarker })
+        )
+        const versions = [...(resp.Versions || []), ...(resp.DeleteMarkers || [])].filter((v: any) => v.Key && v.VersionId)
+        for (const v of versions) {
+          await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: v.Key, VersionId: v.VersionId }))
+        }
+        isTruncated = !!resp.IsTruncated
+        keyMarker = resp.NextKeyMarker
+        versionIdMarker = resp.NextVersionIdMarker
+      }
+    } else {
+      let continuationToken: string | undefined
+      let isTruncated = true
+      while (isTruncated) {
+        const resp: any = await client.send(
+          new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: prefix, ContinuationToken: continuationToken })
+        )
+        for (const obj of (resp.Contents || [])) {
+          if (obj.Key) await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: obj.Key }))
+        }
+        isTruncated = !!resp.IsTruncated
+        continuationToken = resp.NextContinuationToken
+      }
+    }
+  }
+
   const deleteSelectedItems = async () => {
     if (selectedItems.size === 0) return
-    const paths = Array.from(selectedItems)
-    const toDelete = items.filter(i => paths.includes(i.fullPath) && !i.isDir)
-
-    if (toDelete.length === 0) {
-      clearSelection()
-      return
-    }
-
-    if (!confirm(`Delete ${toDelete.length} item(s)? This cannot be undone.`)) return
-
     if (!selectedBucket || !client) {
       toast.error('No bucket or client')
       return
     }
 
-    let count = 0
+    const paths = Array.from(selectedItems)
+    const selected = items.filter(i => paths.includes(i.fullPath))
+    if (selected.length === 0) {
+      clearSelection()
+      return
+    }
+
+    const files = selected.filter(i => !i.isDir)
+    const folders = selected.filter(i => i.isDir)
+
+    // Files: already-deleted -> permanent purge of all versions; live -> soft delete.
+    const softFiles = files.filter(i => !i.isDeleted)
+    const forceFiles = files.filter(i => i.isDeleted)
+
+    // Folders mirror the two-pass file behaviour, but their state is derived from
+    // their contents (the folder itself has no delete marker): a folder that
+    // still has live objects is soft-deleted (first pass, only the live ones get
+    // delete markers); a folder already fully soft-deleted is hard-deleted
+    // (second pass, purge every version). Probe each to classify it.
+    const folderPlans = await Promise.all(
+      folders.map(async (f) => ({ item: f, hasLive: await prefixHasLiveObjects(f.fullPath).catch(() => true) }))
+    )
+    const softFolders = folderPlans.filter(p => p.hasLive).map(p => p.item)
+    const forceFolders = folderPlans.filter(p => !p.hasLive).map(p => p.item)
+
+    const lines: string[] = []
+    if (softFiles.length) lines.push(`• ${softFiles.length} file(s) will be moved to deleted (recoverable).`)
+    if (forceFiles.length) lines.push(`• ${forceFiles.length} already-deleted file(s) will be PERMANENTLY removed.`)
+    if (softFolders.length) lines.push(`• ${softFolders.length} folder(s) will have their contents moved to deleted (recoverable).`)
+    if (forceFolders.length) lines.push(`• ${forceFolders.length} already soft-deleted folder(s) will be PERMANENTLY removed — all contents and versions.`)
+    const hasPermanent = !!(forceFiles.length || forceFolders.length)
+    const onlyPermanent = hasPermanent && !softFiles.length && !softFolders.length
+    const permanentWarning = hasPermanent ? '\n\nPermanent deletions cannot be undone.' : ''
+    const confirmed = await askConfirm({
+      title: `Delete ${selected.length} item(s)?`,
+      message: `${lines.join('\n')}${permanentWarning}`,
+      confirmLabel: onlyPermanent ? 'Delete forever' : 'Delete',
+      danger: true,
+    })
+    if (!confirmed) return
+
+    let okCount = 0
+    let permanentCount = 0
     let errors = 0
-    for (const item of toDelete) {
+    let done = 0
+    const total = selected.length
+    setCurrentDelete({ name: '', done: 0, total })
+
+    const runEntry = async (item: FileItem, fn: () => Promise<any>, permanent: boolean) => {
+      const label = item.isDir ? `${item.name}/` : item.name
+      setCurrentDelete({ name: label, done, total })
       try {
-        await client.send(
-          new DeleteObjectCommand({
-            Bucket: selectedBucket,
-            Key: item.fullPath,
-          })
-        )
-        count++
+        await fn()
+        if (permanent) permanentCount++; else okCount++
       } catch (err: any) {
         console.error('Delete failed for', item.name, err)
         errors++
       }
+      done++
+      setCurrentDelete({ name: label, done, total })
     }
 
-    if (count > 0) {
-      toast.success(`Deleted ${count} item(s)`)
+    for (const item of softFiles) {
+      await runEntry(item, () => client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: item.fullPath })), false)
     }
-    if (errors > 0) {
-      toast.error(`Failed to delete ${errors} item(s)`)
+    for (const item of forceFiles) {
+      await runEntry(item, () => purgeAllVersions(item.fullPath), true)
     }
+    for (const item of softFolders) {
+      await runEntry(item, () => deleteObjectsUnderPrefix(item.fullPath, false), false)
+    }
+    for (const item of forceFolders) {
+      await runEntry(item, () => deleteObjectsUnderPrefix(item.fullPath, true), true)
+    }
+
+    if (okCount > 0) toast.success(`Deleted ${okCount} item(s)`)
+    if (permanentCount > 0) toast.success(`Permanently deleted ${permanentCount} item(s)`)
+    if (errors > 0) toast.error(`Failed to delete ${errors} item(s)`)
     clearSelection()
+    setTimeout(() => setCurrentDelete(null), 650)
     loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
   }
 
@@ -848,7 +1101,7 @@ function App() {
       return
     }
 
-    if (!confirm(`Restore ${toRestore.length} item(s)?`)) return
+    if (!(await askConfirm({ title: `Restore ${toRestore.length} item(s)?`, confirmLabel: 'Restore' }))) return
 
     if (!selectedBucket || !client) {
       toast.error('No bucket or client')
@@ -1140,6 +1393,10 @@ function App() {
       const objectName = currentPrefix + getStorageKey(relativePath)
       const displayName = relativePath.split('/').pop() || relativePath
 
+      // Show the bar immediately so it always appears, even before the first
+      // progress event (and even for tiny files that finish in one chunk).
+      setCurrentUpload({ name: displayName, percent: 0, speed: 0, done, total })
+
       try {
         const upload = new Upload({
           client,
@@ -1153,23 +1410,24 @@ function App() {
 
         let lastLoaded = 0
         let lastTime = Date.now()
+        let lastSpeed = 0
 
         upload.on('httpUploadProgress', (progress: any) => {
-          if (!progress.total) return
-          const percent = Math.round((progress.loaded / progress.total) * 100)
+          const totalBytes = progress.total || file.size
+          if (!totalBytes) return
+          const percent = Math.round((progress.loaded / totalBytes) * 100)
           const now = Date.now()
           const timeDiff = (now - lastTime) / 1000
-          let speed = 0
-          if (timeDiff > 0.1) {
+          if (timeDiff > 0.25) {
             const bytesDiff = progress.loaded - lastLoaded
-            speed = bytesDiff / timeDiff / (1024 * 1024)
+            lastSpeed = bytesDiff / timeDiff / (1024 * 1024)
             lastLoaded = progress.loaded
             lastTime = now
           }
           setCurrentUpload({
             name: displayName,
             percent,
-            speed: parseFloat(speed.toFixed(1)),
+            speed: parseFloat(Math.max(0, lastSpeed).toFixed(1)),
             done,
             total,
           })
@@ -1229,7 +1487,12 @@ function App() {
   const createFolder = async () => {
     if (!selectedBucket || !client) return
 
-    const folderName = prompt('Folder name:')
+    const folderName = await askPrompt({
+      title: 'New folder',
+      label: 'Folder name',
+      placeholder: 'e.g. vacation-2024',
+      confirmLabel: 'Create',
+    })
     if (!folderName || !folderName.trim()) return
 
     const name = folderName.trim()
@@ -1303,16 +1566,32 @@ function App() {
 
   const deleteFile = async (item: FileItem) => {
     if (!selectedBucket || !client || !creds) return
-    if (!confirm(`Delete ${item.name}?`)) return
+
+    // Already-deleted items are permanently purged; live items are soft-deleted.
+    const force = !!item.isDeleted
+    const confirmed = await askConfirm({
+      title: force ? `Permanently delete ${item.name}?` : `Delete ${item.name}?`,
+      message: force
+        ? 'All versions will be removed and this cannot be undone.'
+        : 'This item will be moved to deleted (recoverable).',
+      confirmLabel: force ? 'Delete forever' : 'Delete',
+      danger: true,
+    })
+    if (!confirmed) return
 
     try {
-      await client.send(
-        new DeleteObjectCommand({
-          Bucket: selectedBucket,
-          Key: item.fullPath,
-        })
-      )
-      toast.success(`Deleted ${item.name}`)
+      if (force) {
+        await purgeAllVersions(item.fullPath)
+        toast.success(`Permanently deleted ${item.name}`)
+      } else {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: selectedBucket,
+            Key: item.fullPath,
+          })
+        )
+        toast.success(`Deleted ${item.name}`)
+      }
       loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
     } catch (err: any) {
       toast.error('Delete failed: ' + err.message)
@@ -1325,7 +1604,7 @@ function App() {
       toast.error('Cannot restore: missing version info')
       return
     }
-    if (!confirm(`Restore ${item.name}?`)) return
+    if (!(await askConfirm({ title: `Restore ${item.name}?`, confirmLabel: 'Restore' }))) return
 
     try {
       await client.send(
@@ -1384,27 +1663,35 @@ function App() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
 
-    const items = e.dataTransfer.items
-    if (items && items.length > 0) {
-      const results: { file: File; relativePath: string }[] = []
-
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i]
-        const entry = item.webkitGetAsEntry?.()
-        if (entry) {
-          await processEntry(entry, results)
-        }
+    // IMPORTANT: DataTransfer items/files are only valid during the synchronous
+    // part of the drop event — the browser clears the list as soon as we yield
+    // (the first await). So grab every entry (and snapshot the plain file list)
+    // up front; the FileSystemEntry objects stay valid afterwards. Reading
+    // items[i] after an await is what previously dropped all but the first file.
+    const itemList = e.dataTransfer.items
+    const entries: any[] = []
+    if (itemList && itemList.length > 0) {
+      for (let i = 0; i < itemList.length; i++) {
+        const entry = itemList[i].webkitGetAsEntry?.()
+        if (entry) entries.push(entry)
       }
+    }
+    const plainFiles = Array.from(e.dataTransfer.files || [])
 
+    if (entries.length > 0) {
+      const results: { file: File; relativePath: string }[] = []
+      for (const entry of entries) {
+        await processEntry(entry, results)
+      }
       if (results.length > 0) {
         await uploadFilesWithStructure(results)
         return
       }
     }
 
-    // fallback for plain files
-    if (e.dataTransfer.files.length > 0) {
-      await uploadFiles(e.dataTransfer.files)
+    // Fallback for plain files (entries API unavailable)
+    if (plainFiles.length > 0) {
+      await uploadFiles(plainFiles)
     }
   }
 
@@ -1420,6 +1707,8 @@ function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (promptDialog) { resolvePrompt(null); return }
+        if (confirmDialog) { resolveConfirm(false); return }
         if (previewItem) closePreview()
         if (shareModalOpen) closeShareModal()
       } else if (previewItem) {
@@ -1435,7 +1724,7 @@ function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [previewItem, shareModalOpen, goPrevImage, goNextImage])
+  }, [previewItem, shareModalOpen, goPrevImage, goNextImage, confirmDialog, promptDialog])
 
   // LOGIN SCREEN
   if (!isLoggedIn) {
@@ -1538,32 +1827,30 @@ function App() {
             </div>
           )}
 
-          {/* Action buttons + right controls (hidden on mobile, shown in burger) */}
-          <div className="hidden md:flex items-center gap-1 sm:gap-1.5 overflow-x-auto whitespace-nowrap shrink-0">
+          {/* Action buttons + right controls (full toolbar on desktop; phone & tablet use the burger) */}
+          <div className="hidden lg:flex items-center gap-1.5 overflow-x-auto whitespace-nowrap shrink-0">
             {isInSelectMode && (
-              <div className="flex items-center gap-1 text-xs sm:text-sm">
-                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
+              <div className="flex items-center gap-1.5 pr-1.5 mr-0.5 border-r border-beige-200">
+                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-xs font-medium">
                   {selectedItems.size}
                 </span>
-                <button
-                  onClick={downloadSelectedItems}
-                  className="btn btn-primary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2"
-                >
+                <button onClick={toggleSelectAll} className="btn btn-secondary text-sm py-1.5 px-3">
+                  {allFilteredSelected ? 'Deselect all' : 'Select all'}
+                </button>
+                <button onClick={downloadSelectedItems} className="btn btn-primary text-sm py-1.5 px-3">
                   Download
                 </button>
-                <button
-                  onClick={restoreSelectedItems}
-                  className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-green-600 hover:bg-green-50"
-                >
+                <button onClick={restoreSelectedItems} className="btn btn-secondary text-sm py-1.5 px-3 text-green-600 hover:bg-green-50">
                   Restore
                 </button>
                 <button
                   onClick={deleteSelectedItems}
-                  className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-red-600 hover:bg-red-50"
+                  className={`btn text-sm py-1.5 px-3 ${selectedDeleteIsForce ? 'btn-primary bg-red-600 border-red-600 hover:bg-red-700 hover:border-red-700' : 'btn-secondary text-red-600 hover:bg-red-50'}`}
+                  title={selectedDeleteIsForce ? 'Permanently remove the selected deleted items (all versions)' : 'Move selected items to deleted (recoverable)'}
                 >
-                  Delete
+                  {selectedDeleteIsForce ? 'Delete forever' : 'Delete'}
                 </button>
-                <button onClick={clearSelection} className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2">
+                <button onClick={clearSelection} className="btn btn-secondary text-sm py-1.5 px-3">
                   Clear
                 </button>
               </div>
@@ -1571,31 +1858,31 @@ function App() {
 
             <button
               onClick={() => setShowDeleted(!showDeleted)}
-              className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
+              className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-sm py-1.5 px-3 flex items-center gap-1.5`}
               title={showDeleted ? 'Hide deleted photos' : 'Show deleted photos (including delete markers)'}
             >
-              {showDeleted ? <EyeOff size={13} /> : <Eye size={13} />}
-              <span className="hidden sm:inline">{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
+              {showDeleted ? <EyeOff size={15} /> : <Eye size={15} />}
+              <span>{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
             </button>
 
             <button
               onClick={() => setShowNotes(!showNotes)}
-              className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
+              className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-sm py-1.5 px-3 flex items-center gap-1.5`}
               title={showNotes ? 'Hide notes' : 'Show notes (tooltips on hover when off)'}
             >
-              <MessageSquare size={13} />
-              <span className="hidden sm:inline">{showNotes ? 'Hide notes' : 'Show notes'}</span>
+              <MessageSquare size={15} />
+              <span>{showNotes ? 'Hide notes' : 'Show notes'}</span>
             </button>
 
             {selectedBucket && (
-              <button onClick={createFolder} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-                <FolderPlus size={14} /> <span className="hidden sm:inline">Create folder</span>
+              <button onClick={createFolder} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5">
+                <FolderPlus size={15} /> <span>Create folder</span>
               </button>
             )}
 
-            <label className="btn btn-primary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-              <UploadIcon size={14} />
-              <span className="hidden sm:inline">Upload files</span>
+            <label className="btn btn-primary cursor-pointer text-sm py-1.5 px-3 flex items-center gap-1.5">
+              <UploadIcon size={15} />
+              <span>Upload files</span>
               <input
                 type="file"
                 multiple
@@ -1607,9 +1894,9 @@ function App() {
               />
             </label>
 
-            <label className="btn btn-secondary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-              <UploadIcon size={14} />
-              <span className="hidden sm:inline">Upload folder</span>
+            <label className="btn btn-secondary cursor-pointer text-sm py-1.5 px-3 flex items-center gap-1.5">
+              <FolderUp size={15} />
+              <span>Upload folder</span>
               <input
                 type="file"
                 // @ts-ignore - webkit specific
@@ -1621,74 +1908,80 @@ function App() {
               />
             </label>
 
-            <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-2 sm:px-3.5 gap-2" title="Disconnect">
+            <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 text-red-600" title="Disconnect">
               <LogOut size={15} />
-              <span className="hidden sm:inline">Disconnect</span>
+              <span>Disconnect</span>
             </button>
           </div>
 
-          {/* Mobile burger menu button */}
+          {/* Burger menu button (phone + tablet) */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="md:hidden p-2 -mr-1 text-beige-700 hover:text-beige-900"
+            className="lg:hidden shrink-0 p-2.5 -mr-1 rounded-lg text-beige-700 hover:text-beige-900 hover:bg-beige-100"
             aria-label="Toggle menu"
+            aria-expanded={mobileMenuOpen}
           >
-            <Menu size={20} />
+            <Menu size={22} />
           </button>
         </div>
 
-        {/* Mobile menu dropdown */}
+        {/* Burger menu dropdown (phone + tablet) */}
         {mobileMenuOpen && (
-          <div className="md:hidden border-t border-beige-200 bg-white px-3 py-2 text-xs">
-            <div className="flex flex-col gap-1">
+          <div className="lg:hidden border-t border-beige-200 bg-white px-3 py-3 text-sm">
+            <div className="flex flex-col gap-1.5">
               {isInSelectMode && (
-                <div className="flex items-center gap-1 py-1 border-b border-beige-100">
-                  <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
-                    {selectedItems.size}
+                <div className="flex flex-col gap-2 pb-3 mb-1 border-b border-beige-100">
+                  <span className="self-start px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-xs font-medium">
+                    {selectedItems.size} selected
                   </span>
-                  <button onClick={() => { downloadSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-primary text-[10px] py-0.5 px-1.5 flex-1">Download</button>
-                  <button onClick={() => { restoreSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-[10px] py-0.5 px-1.5 text-green-600">Restore</button>
-                  <button onClick={() => { deleteSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-[10px] py-0.5 px-1.5 text-red-600">Delete</button>
-                  <button onClick={() => { clearSelection(); setMobileMenuOpen(false); }} className="btn btn-secondary text-[10px] py-0.5 px-1.5">Clear</button>
+                  <button onClick={toggleSelectAll} className="btn btn-secondary text-sm py-2.5 justify-center w-full">
+                    {allFilteredSelected ? 'Deselect all' : 'Select all'}
+                  </button>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button onClick={() => { downloadSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-primary text-sm py-2.5 justify-center">Download</button>
+                    <button onClick={() => { restoreSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 justify-center text-green-600">Restore</button>
+                    <button onClick={() => { deleteSelectedItems(); setMobileMenuOpen(false); }} className={`btn text-sm py-2.5 justify-center ${selectedDeleteIsForce ? 'btn-primary bg-red-600 border-red-600' : 'btn-secondary text-red-600'}`}>{selectedDeleteIsForce ? 'Delete forever' : 'Delete'}</button>
+                    <button onClick={() => { clearSelection(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 justify-center">Clear</button>
+                  </div>
                 </div>
               )}
 
               <button
                 onClick={() => { setShowDeleted(!showDeleted); setMobileMenuOpen(false); }}
-                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-[10px] py-1 px-2 flex items-center gap-1 w-full justify-start`}
+                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start`}
               >
-                {showDeleted ? <EyeOff size={13} /> : <Eye size={13} />}
+                {showDeleted ? <EyeOff size={16} /> : <Eye size={16} />}
                 <span>{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
               </button>
 
               <button
                 onClick={() => { setShowNotes(!showNotes); setMobileMenuOpen(false); }}
-                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-[10px] py-1 px-2 flex items-center gap-1 w-full justify-start`}
+                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start`}
               >
-                <MessageSquare size={13} />
+                <MessageSquare size={16} />
                 <span>{showNotes ? 'Hide notes' : 'Show notes'}</span>
               </button>
 
               {selectedBucket && (
-                <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="btn btn-secondary text-xs py-1 px-2 flex items-center gap-1 w-full justify-start">
-                  <FolderPlus size={14} /> Create folder
+                <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start">
+                  <FolderPlus size={16} /> Create folder
                 </button>
               )}
 
-              <label className="btn btn-primary cursor-pointer text-xs py-1 px-2 flex items-center gap-1 w-full justify-start">
-                <UploadIcon size={14} /> Upload files
+              <label className="btn btn-primary cursor-pointer text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start">
+                <UploadIcon size={16} /> Upload files
                 {/* @ts-ignore */}
                 <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) { uploadFiles(e.target.files); setMobileMenuOpen(false); } e.target.value = ''; }} />
               </label>
 
-              <label className="btn btn-secondary cursor-pointer text-xs py-1 px-2 flex items-center gap-1 w-full justify-start">
-                <UploadIcon size={14} /> Upload folder
+              <label className="btn btn-secondary cursor-pointer text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start">
+                <FolderUp size={16} /> Upload folder
                 {/* @ts-ignore */}
                 <input type="file" webkitdirectory="" directory="" multiple className="hidden" onChange={(e) => { handleFolderUpload(e); setMobileMenuOpen(false); }} />
               </label>
 
-              <button onClick={() => { disconnect(); setMobileMenuOpen(false); }} className="btn btn-secondary text-xs py-1 px-2 flex items-center gap-1 w-full justify-start text-red-600">
-                <LogOut size={15} /> Disconnect
+              <button onClick={() => { disconnect(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start text-red-600">
+                <LogOut size={16} /> Disconnect
               </button>
             </div>
           </div>
@@ -1731,6 +2024,22 @@ function App() {
                       />
                     </div>
                     <div className="text-sm truncate font-medium mt-1">{currentUpload.name}</div>
+                  </div>
+                )}
+
+                {currentDelete && (
+                  <div className="mb-5 card p-4">
+                    <div className="text-xs uppercase tracking-widest mb-1 text-red-600 font-semibold">Deleting</div>
+                    <div className="flex justify-between text-xs mb-1 text-beige-600">
+                      <span>{currentDelete.done}/{currentDelete.total} items</span>
+                    </div>
+                    <div className="h-2 bg-beige-200 rounded overflow-hidden mb-1">
+                      <div
+                        className="h-full bg-red-500 transition-all"
+                        style={{ width: `${currentDelete.total > 0 ? Math.round((currentDelete.done / currentDelete.total) * 100) : 0}%` }}
+                      />
+                    </div>
+                    {currentDelete.name && <div className="text-sm truncate font-medium mt-1">{currentDelete.name}</div>}
                   </div>
                 )}
 
@@ -1880,10 +2189,10 @@ function App() {
                 ) : viewMode === 'grid' ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 sm:gap-4 items-start">
                     {visibleItems.map((item, index) => (
-                      <div 
-                        key={index} 
-                        className={`file-item card flex flex-col group relative overflow-visible ${item.isDeleted ? 'opacity-60' : ''}`} 
-                        data-fullpath={item.fullPath} 
+                      <div
+                        key={index}
+                        className={`file-item card flex flex-col group relative overflow-visible ${item.isDeleted ? 'opacity-60' : ''} ${selectedItems.has(item.fullPath) ? 'ring-2 ring-blue-400' : ''}`}
+                        data-fullpath={item.fullPath}
                         data-isdir={item.isDir ? 'true' : 'false'}
                         onMouseEnter={(e) => {
                           if (!showNotes && !item.isDir && notes[item.fullPath]) {
@@ -1898,22 +2207,54 @@ function App() {
                         onMouseLeave={() => setTooltip(null)}
                       >
                         {item.isDir ? (
-                          <button onClick={() => navigateTo(item.fullPath)} className="flex-1 p-2 sm:p-3 flex flex-col">
-                            <div className="thumbnail w-full h-32 sm:h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
-                              <Folder size={36} className="sm:hidden text-beige-600" />
-                              <Folder size={46} className="hidden sm:block text-beige-600" />
+                          <>
+                            {/* Select checkbox — hidden unless selected/in select mode or hovered */}
+                            <div
+                              className={`absolute top-2 left-2 z-30 transition-opacity ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
+                              onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
+                            >
+                              <div
+                                className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                                  selectedItems.has(item.fullPath)
+                                    ? 'bg-blue-500 border-blue-500'
+                                    : 'bg-white/80 border-gray-300 hover:border-blue-400'
+                                }`}
+                              >
+                                {selectedItems.has(item.fullPath) && <Check size={10} className="text-white" />}
+                              </div>
                             </div>
-                            <div className="pt-3 px-1">
-                              <div className="font-medium text-sm truncate">{item.name}</div>
-                              <div className="text-xs text-beige-600">Folder</div>
-                            </div>
-                          </button>
+                            <button
+                              onClick={() => {
+                                if (longPressFired.current) { longPressFired.current = false; return }
+                                if (isInSelectMode) { toggleSelect(item.fullPath) } else { navigateTo(item.fullPath) }
+                              }}
+                              onTouchStart={() => startLongPress(item.fullPath)}
+                              onTouchEnd={cancelLongPress}
+                              onTouchMove={cancelLongPress}
+                              onTouchCancel={cancelLongPress}
+                              className="flex-1 p-2 sm:p-3 flex flex-col select-none [-webkit-touch-callout:none]"
+                            >
+                              <div className="thumbnail w-full h-32 sm:h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
+                                <Folder size={36} className="sm:hidden text-beige-600" />
+                                <Folder size={46} className="hidden sm:block text-beige-600" />
+                              </div>
+                              <div className="pt-3 px-1">
+                                <div className="font-medium text-sm truncate">{item.name}</div>
+                                <div className="text-xs text-beige-600">Folder</div>
+                              </div>
+                            </button>
+                          </>
                         ) : (
                           <>
                             <div className="relative overflow-hidden">
                               <div
-                                className="cursor-pointer"
+                                className="cursor-pointer select-none [-webkit-touch-callout:none]"
+                                onTouchStart={() => startLongPress(item.fullPath)}
+                                onTouchEnd={cancelLongPress}
+                                onTouchMove={cancelLongPress}
+                                onTouchCancel={cancelLongPress}
                                 onClick={() => {
+                                  if (longPressFired.current) { longPressFired.current = false; return }
                                   if (isInSelectMode) {
                                     toggleSelect(item.fullPath)
                                   } else if (!item.isDeleted) {
@@ -1921,9 +2262,9 @@ function App() {
                                   }
                                 }}
                               >
-                                {/* Select icon top-left */}
+                                {/* Select icon top-left — hidden unless selected/in select mode or hovered */}
                                 <div
-                                  className="absolute top-2 left-2 z-30"
+                                  className={`absolute top-2 left-2 z-30 transition-opacity ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     toggleSelect(item.fullPath)
@@ -2044,9 +2385,13 @@ function App() {
                       return (
                         <div
                           key={index}
-                          className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1 sm:py-1.5 group text-sm hover:bg-beige-50 transition-colors ${item.isDeleted ? 'opacity-60' : ''} ${isSelected ? 'bg-blue-50/40' : ''}`}
+                          className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1 sm:py-1.5 group text-sm hover:bg-beige-50 transition-colors select-none [-webkit-touch-callout:none] ${item.isDeleted ? 'opacity-60' : ''} ${isSelected ? 'bg-blue-50/40' : ''}`}
                           data-fullpath={item.fullPath}
                           data-isdir={item.isDir ? 'true' : 'false'}
+                          onTouchStart={() => startLongPress(item.fullPath)}
+                          onTouchEnd={cancelLongPress}
+                          onTouchMove={cancelLongPress}
+                          onTouchCancel={cancelLongPress}
                           onMouseEnter={(e) => {
                             if (!showNotes && !item.isDir && notes[item.fullPath]) {
                               setTooltip({ text: notes[item.fullPath], x: e.clientX, y: e.clientY })
@@ -2059,9 +2404,9 @@ function App() {
                           }}
                           onMouseLeave={() => setTooltip(null)}
                         >
-                          {/* Select checkbox */}
+                          {/* Select checkbox — hidden unless selected/in select mode or hovered */}
                           <div
-                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-colors ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-white border-gray-300 hover:border-blue-400'}`}
+                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-white border-gray-300 hover:border-blue-400'} ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
                             onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
                           >
                             {isSelected && <Check size={10} className="text-white" />}
@@ -2076,10 +2421,11 @@ function App() {
                           <div
                             className={`flex-1 min-w-0 truncate font-medium cursor-pointer hover:underline ${item.isDeleted ? 'line-through text-red-400' : 'text-warm-900'}`}
                             onClick={() => {
-                              if (item.isDir) {
-                                navigateTo(item.fullPath)
-                              } else if (isInSelectMode) {
+                              if (longPressFired.current) { longPressFired.current = false; return }
+                              if (isInSelectMode) {
                                 toggleSelect(item.fullPath)
+                              } else if (item.isDir) {
+                                navigateTo(item.fullPath)
                               } else if (!item.isDeleted) {
                                 isImage(item.name) ? openPreview(item) : downloadFile(item)
                               }
@@ -2401,6 +2747,68 @@ function App() {
               This note is stored as a tag (key: "note") on the object.
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Confirm dialog */}
+      {confirmDialog && (
+        <div className="modal" onClick={() => resolveConfirm(false)}>
+          <div className="modal-content w-full max-w-sm mx-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b border-beige-200 bg-beige-50 font-medium">
+              {confirmDialog.title}
+            </div>
+            {confirmDialog.message && (
+              <div className="p-5 text-sm text-warm-800 whitespace-pre-line">{confirmDialog.message}</div>
+            )}
+            <div className={`flex gap-2 px-5 pb-5 ${confirmDialog.message ? '' : 'pt-5'}`}>
+              <button onClick={() => resolveConfirm(false)} className="btn btn-secondary flex-1">
+                {confirmDialog.cancelLabel}
+              </button>
+              <button
+                autoFocus
+                onClick={() => resolveConfirm(true)}
+                className={`btn flex-1 ${confirmDialog.danger ? 'btn-primary bg-red-600 border-red-600 hover:bg-red-700 hover:border-red-700' : 'btn-primary'}`}
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Prompt dialog */}
+      {promptDialog && (
+        <div className="modal" onClick={() => resolvePrompt(null)}>
+          <form
+            className="modal-content w-full max-w-sm mx-auto"
+            onClick={e => e.stopPropagation()}
+            onSubmit={(e) => { e.preventDefault(); resolvePrompt(promptDialog.value) }}
+          >
+            <div className="px-5 py-3 border-b border-beige-200 bg-beige-50 font-medium">
+              {promptDialog.title}
+            </div>
+            <div className="p-5">
+              {promptDialog.label && (
+                <label className="block text-sm font-medium mb-1.5 text-warm-900">{promptDialog.label}</label>
+              )}
+              <input
+                autoFocus
+                type="text"
+                className="input w-full"
+                placeholder={promptDialog.placeholder}
+                value={promptDialog.value}
+                onChange={(e) => setPromptDialog(d => d ? { ...d, value: e.target.value } : d)}
+              />
+              <div className="flex gap-2 mt-4">
+                <button type="button" onClick={() => resolvePrompt(null)} className="btn btn-secondary flex-1">
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary flex-1">
+                  {promptDialog.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
       )}
 
