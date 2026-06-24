@@ -2147,7 +2147,7 @@ function App() {
       {/* Preview Modal */}
       {previewItem && previewUrl && (
         <div className="modal" onClick={closePreview}>
-          <div className="modal-content w-full max-w-5xl" onClick={e => e.stopPropagation()}>
+          <div className="modal-content !w-[90vw] !h-[90vh] !max-w-none !max-h-none" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b border-beige-200 bg-beige-50">
               <div className="font-medium truncate pr-4 max-w-[45%]">{previewItem.name}</div>
               <div className="flex items-center gap-2">
@@ -2182,11 +2182,11 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="p-5 bg-beige-100 flex items-center justify-center overflow-auto" style={{ maxHeight: '80vh' }}>
+            <div className="p-5 bg-beige-100 flex items-center justify-center flex-1 min-h-0 overflow-hidden">
               <img
                 src={previewUrl}
                 alt={previewItem.name}
-                className="max-w-full max-h-[72vh] object-contain rounded-lg shadow-sm bg-white"
+                className="max-w-full max-h-full object-contain rounded-lg shadow-sm bg-white"
               />
             </div>
             <div className="px-5 py-2.5 text-xs border-t border-beige-200 bg-white text-beige-600 flex justify-between">
