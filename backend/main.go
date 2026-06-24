@@ -176,6 +176,11 @@ func main() {
 			w.Write([]byte("ok"))
 		})
 		r.Get("/preview", previewHandler)
+		r.Get("/minio", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			addr := resolveMinioAddress()
+			_ = json.NewEncoder(w).Encode(map[string]string{"endpoint": addr})
+		})
 	})
 
 	// Serve the embedded React frontend (SPA)

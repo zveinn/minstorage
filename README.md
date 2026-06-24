@@ -1,5 +1,10 @@
 # Family Storage
 
+## How to get a free trial for minio
+- go to the min.io website
+- press "download"
+- request a free license key
+
 A simple, modern file browser for MinIO. One Go binary serves the React web app
 and talks to your MinIO server.
 
@@ -27,6 +32,10 @@ can serve it.
 ```bash
 cd ../backend
 go run main.go
+
+# full example
+# NOTE: the UI will try to access minio from the address given in --minio
+./backend --address EXTERNAL_IP:7002 --minio http://EXTERNAL_IP:7000 --user minioadmin --pass minioadmin
 ```
 
 The server now listens on `http://localhost:8080`.
