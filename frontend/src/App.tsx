@@ -14,7 +14,8 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare
+  LogOut, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
+  LayoutGrid, List
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -261,6 +262,7 @@ function App() {
   const [searchType, setSearchType] = useState<'name' | 'note'>('name')
   const [showDeleted, setShowDeleted] = useState(false)
   const [showNotes, setShowNotes] = useState(false)
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
@@ -356,6 +358,7 @@ function App() {
           let targetPrefix = ''
           let targetShowDeleted = false
           let targetShowNotes = false
+          let targetViewMode: 'grid' | 'list' = 'grid'
           try {
             const saved = sessionStorage.getItem(STORAGE_STATE_KEY)
             if (saved) {
@@ -372,6 +375,9 @@ function App() {
               if (typeof parsedState.showNotes === 'boolean') {
                 targetShowNotes = parsedState.showNotes
               }
+              if (parsedState.viewMode === 'list' || parsedState.viewMode === 'grid') {
+                targetViewMode = parsedState.viewMode
+              }
             }
           } catch {}
 
@@ -384,6 +390,9 @@ function App() {
             }
             if (targetShowNotes !== showNotes) {
               setShowNotes(targetShowNotes)
+            }
+            if (targetViewMode !== viewMode) {
+              setViewMode(targetViewMode)
             }
             setSelectedBucket(bucketToUse)
             setCurrentPrefix(prefixToUse)
@@ -443,10 +452,11 @@ function App() {
         currentPrefix,
         showDeleted,
         showNotes,
+        viewMode,
       }
       sessionStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state))
     }
-  }, [selectedBucket, currentPrefix, showDeleted, showNotes, isLoggedIn])
+  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, isLoggedIn])
 
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
@@ -476,6 +486,7 @@ function App() {
       setSearchType('name')
       setShowNotes(false)
       setNotes({})
+      setViewMode('grid')
 
       if (bucketList.length > 0) {
         await selectBucket(bucketList[0], s3Client, newCreds)
@@ -511,6 +522,7 @@ function App() {
     setExpandedPrefixes(new Set())
     setNotes({})
     setShowNotes(false)
+    setViewMode('grid')
     toast.info('Disconnected')
   }
 
@@ -1697,11 +1709,29 @@ function App() {
               <button
                 onClick={() => setShowNotes(!showNotes)}
                 className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-xs py-1 px-2 flex items-center gap-1`}
-                title={showNotes ? 'Hide notes under cards' : 'Show notes under cards (tooltips on hover when off)'}
+                title={showNotes ? 'Hide notes' : 'Show notes (tooltips on hover when off)'}
               >
                 <MessageSquare size={14} />
                 {showNotes ? 'Hide notes' : 'Show notes'}
               </button>
+
+              {/* View toggle: grid / list (minimal) */}
+              <div className="flex items-center border border-beige-200 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`px-2 py-1 text-xs flex items-center ${viewMode === 'grid' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
+                  title="Grid view"
+                >
+                  <LayoutGrid size={14} />
+                </button>
+                <button
+                  onClick={() => setViewMode('list')}
+                  className={`px-2 py-1 text-xs flex items-center ${viewMode === 'list' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
+                  title="List view"
+                >
+                  <List size={14} />
+                </button>
+              </div>
 
               {selectedBucket && (
                 <button onClick={createFolder} className="btn btn-secondary">
@@ -1784,16 +1814,24 @@ function App() {
                 )}
 
                 {loading ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
-                    {Array.from({ length: 8 }).map((_, i) => (
-                      <div key={i} className="card h-44 animate-pulse bg-beige-100" />
-                    ))}
-                  </div>
+                  viewMode === 'grid' ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
+                      {Array.from({ length: 8 }).map((_, i) => (
+                        <div key={i} className="card h-44 animate-pulse bg-beige-100" />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="border border-beige-200 rounded-xl bg-white overflow-hidden">
+                      {Array.from({ length: 6 }).map((_, i) => (
+                        <div key={i} className="h-9 bg-beige-100 animate-pulse border-b border-beige-200 last:border-b-0" />
+                      ))}
+                    </div>
+                  )
                 ) : filteredItems.length === 0 ? (
                   <div className="text-center py-16 text-beige-700">
                     {search ? 'No matching files' : 'This folder is empty'}
                   </div>
-                ) : (
+                ) : viewMode === 'grid' ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4 items-start">
                     {filteredItems.map((item, index) => (
                       <div 
@@ -1948,6 +1986,107 @@ function App() {
                         )}
                       </div>
                     ))}
+                  </div>
+                ) : (
+                  /* Minimal list view - no image previews at all */
+                  <div className="divide-y divide-beige-200 border border-beige-200 rounded-xl bg-white overflow-hidden">
+                    {filteredItems.map((item, index) => {
+                      const isSelected = selectedItems.has(item.fullPath)
+                      return (
+                        <div
+                          key={index}
+                          className={`flex items-center gap-3 px-3 py-1.5 group text-sm hover:bg-beige-50 transition-colors ${item.isDeleted ? 'opacity-60' : ''} ${isSelected ? 'bg-blue-50/40' : ''}`}
+                          data-fullpath={item.fullPath}
+                          data-isdir={item.isDir ? 'true' : 'false'}
+                          onMouseEnter={(e) => {
+                            if (!showNotes && !item.isDir && notes[item.fullPath]) {
+                              setTooltip({ text: notes[item.fullPath], x: e.clientX, y: e.clientY })
+                            }
+                          }}
+                          onMouseMove={(e) => {
+                            if (!showNotes && !item.isDir && notes[item.fullPath]) {
+                              setTooltip({ text: notes[item.fullPath], x: e.clientX, y: e.clientY })
+                            }
+                          }}
+                          onMouseLeave={() => setTooltip(null)}
+                        >
+                          {/* Select checkbox */}
+                          <div
+                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-colors ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-white border-gray-300 hover:border-blue-400'}`}
+                            onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
+                          >
+                            {isSelected && <Check size={10} className="text-white" />}
+                          </div>
+
+                          {/* Icon (no preview) */}
+                          <div className="shrink-0 text-beige-600">
+                            {item.isDir ? <Folder size={16} /> : <File size={16} />}
+                          </div>
+
+                          {/* Name */}
+                          <div
+                            className={`flex-1 min-w-0 truncate font-medium cursor-pointer hover:underline ${item.isDeleted ? 'line-through text-red-400' : 'text-warm-900'}`}
+                            onClick={() => {
+                              if (item.isDir) {
+                                navigateTo(item.fullPath)
+                              } else if (isInSelectMode) {
+                                toggleSelect(item.fullPath)
+                              } else if (!item.isDeleted) {
+                                isImage(item.name) ? openPreview(item) : downloadFile(item)
+                              }
+                            }}
+                          >
+                            {item.name}
+                            {item.isDeleted && <span className="ml-1 text-[9px] text-red-400">(deleted)</span>}
+                          </div>
+
+                          {/* Note (inline if shown) */}
+                          {showNotes && !item.isDir && notes[item.fullPath] && (
+                            <div className="max-w-[220px] truncate text-xs text-black" title={notes[item.fullPath]}>
+                              {notes[item.fullPath]}
+                            </div>
+                          )}
+
+                          {/* Size */}
+                          <div className="w-16 text-right text-[11px] text-beige-600 shrink-0 tabular-nums">
+                            {item.isDir ? '—' : formatSize(item.size)}
+                          </div>
+
+                          {/* Date */}
+                          <div className="w-[70px] text-right text-[11px] text-beige-600 shrink-0">
+                            {item.lastModified ? format(item.lastModified, 'MMM d') : '—'}
+                          </div>
+
+                          {/* Minimal actions (shown on hover, files only) */}
+                          {!item.isDir ? (
+                            <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition shrink-0">
+                              {item.isDeleted ? (
+                                <button onClick={(e) => { e.stopPropagation(); restoreFile(item) }} className="p-1 rounded hover:bg-green-100 text-green-600" title="Restore">
+                                  <RotateCcw size={14} />
+                                </button>
+                              ) : (
+                                <>
+                                  <button onClick={(e) => { e.stopPropagation(); downloadFile(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Download">
+                                    <Download size={14} />
+                                  </button>
+                                  <button onClick={(e) => { e.stopPropagation(); openShareModal(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Share">
+                                    <Link size={14} />
+                                  </button>
+                                  <button onClick={(e) => { e.stopPropagation(); openNoteModal(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Note">
+                                    <MessageSquare size={14} />
+                                  </button>
+                                </>
+                              )}
+                              <button onClick={(e) => { e.stopPropagation(); deleteFile(item) }} className="p-1 rounded hover:bg-red-100 text-red-600" title="Delete">
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="w-8" />
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
 
