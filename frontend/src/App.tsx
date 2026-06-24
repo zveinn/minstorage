@@ -1816,7 +1816,7 @@ function App() {
                     </div>
 
                     {/* Controls: per-page + page nav (mobile friendly) */}
-                    <div className="flex items-center gap-1 sm:gap-2 shrink-0 text-xs">
+                    <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                       <select
                         value={pageSize}
                         onChange={(e) => {
@@ -1825,7 +1825,7 @@ function App() {
                           setPageSize(newSize)
                           setCurrentPage(1)
                         }}
-                        className="input text-[10px] py-0.5 px-1 sm:text-xs sm:py-1 sm:px-1.5 tabular-nums w-14 sm:w-16"
+                        className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 tabular-nums w-14 sm:w-16"
                         title="Items per page"
                       >
                         <option value={100}>100</option>
@@ -1837,7 +1837,7 @@ function App() {
                       <select
                         value={sortMode}
                         onChange={(e) => setSortMode(e.target.value as 'name' | 'date')}
-                        className="input text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 w-28 sm:w-32 flex-shrink-0"
+                        className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 w-28 sm:w-32 flex-shrink-0"
                         title="Sort by"
                       >
                         <option value="name">Alphabetical</option>
