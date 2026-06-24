@@ -15,7 +15,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
-  LayoutGrid, List
+  LayoutGrid, List, Menu
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -317,6 +317,8 @@ function App() {
   const [isLoadingNote, setIsLoadingNote] = useState(false)
   const [isSavingNote, setIsSavingNote] = useState(false)
 
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
   const [loginForm, setLoginForm] = useState(() => {
     // Auto-detect MinIO endpoint:
     // Use the same host the UI is served from, and current port - 2
@@ -550,6 +552,7 @@ function App() {
     setSearch('')
     setCurrentPage(1)
     clearSelection()
+    setMobileMenuOpen(false)
     await loadObjects(bucket, '', activeClient, activeCreds, showDeleted)
   }, [client, creds, showDeleted])
 
@@ -622,12 +625,14 @@ function App() {
     setSearch('')
     setCurrentPage(1)
     clearSelection()
+    setMobileMenuOpen(false)
     loadObjects(selectedBucket, prefix, client, creds, showDeleted)
   }
 
   const goHome = () => {
     if (selectedBucket) {
       setCurrentPage(1)
+      setMobileMenuOpen(false)
       navigateTo('')
     }
   }
@@ -1573,8 +1578,8 @@ function App() {
             </div>
           )}
 
-          {/* Action buttons + right controls (compact, scrollable on narrow screens) */}
-          <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto whitespace-nowrap shrink-0">
+          {/* Action buttons + right controls (hidden on mobile, shown in burger) */}
+          <div className="hidden md:flex items-center gap-1 sm:gap-1.5 overflow-x-auto whitespace-nowrap shrink-0">
             {isInSelectMode && (
               <div className="flex items-center gap-1 text-xs sm:text-sm">
                 <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
@@ -1622,24 +1627,6 @@ function App() {
               <span className="hidden sm:inline">{showNotes ? 'Hide notes' : 'Show notes'}</span>
             </button>
 
-            {/* View toggle: grid / list */}
-            <div className="flex items-center border border-beige-200 rounded-lg overflow-hidden text-xs">
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'grid' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
-                title="Grid view"
-              >
-                <LayoutGrid size={13} />
-              </button>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'list' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
-                title="List view"
-              >
-                <List size={13} />
-              </button>
-            </div>
-
             {selectedBucket && (
               <button onClick={createFolder} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
                 <FolderPlus size={14} /> <span className="hidden sm:inline">Create folder</span>
@@ -1679,7 +1666,73 @@ function App() {
               <span className="hidden sm:inline">Disconnect</span>
             </button>
           </div>
+
+          {/* Mobile burger menu button */}
+          <button
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="md:hidden p-2 -mr-1 text-beige-700 hover:text-beige-900"
+            aria-label="Toggle menu"
+          >
+            <Menu size={20} />
+          </button>
         </div>
+
+        {/* Mobile menu dropdown */}
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-beige-200 bg-white px-3 py-2 text-xs">
+            <div className="flex flex-col gap-1">
+              {isInSelectMode && (
+                <div className="flex items-center gap-1 py-1 border-b border-beige-100">
+                  <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
+                    {selectedItems.size}
+                  </span>
+                  <button onClick={() => { downloadSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-primary text-[10px] py-0.5 px-1.5 flex-1">Download</button>
+                  <button onClick={() => { restoreSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-[10px] py-0.5 px-1.5 text-green-600">Restore</button>
+                  <button onClick={() => { deleteSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-[10px] py-0.5 px-1.5 text-red-600">Delete</button>
+                  <button onClick={() => { clearSelection(); setMobileMenuOpen(false); }} className="btn btn-secondary text-[10px] py-0.5 px-1.5">Clear</button>
+                </div>
+              )}
+
+              <button
+                onClick={() => { setShowDeleted(!showDeleted); setMobileMenuOpen(false); }}
+                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-[10px] py-1 px-2 flex items-center gap-1 w-full justify-start`}
+              >
+                {showDeleted ? <EyeOff size={13} /> : <Eye size={13} />}
+                <span>{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
+              </button>
+
+              <button
+                onClick={() => { setShowNotes(!showNotes); setMobileMenuOpen(false); }}
+                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-[10px] py-1 px-2 flex items-center gap-1 w-full justify-start`}
+              >
+                <MessageSquare size={13} />
+                <span>{showNotes ? 'Hide notes' : 'Show notes'}</span>
+              </button>
+
+              {selectedBucket && (
+                <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="btn btn-secondary text-xs py-1 px-2 flex items-center gap-1 w-full justify-start">
+                  <FolderPlus size={14} /> Create folder
+                </button>
+              )}
+
+              <label className="btn btn-primary cursor-pointer text-xs py-1 px-2 flex items-center gap-1 w-full justify-start">
+                <UploadIcon size={14} /> Upload files
+                {/* @ts-ignore */}
+                <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) { uploadFiles(e.target.files); setMobileMenuOpen(false); } e.target.value = ''; }} />
+              </label>
+
+              <label className="btn btn-secondary cursor-pointer text-xs py-1 px-2 flex items-center gap-1 w-full justify-start">
+                <UploadIcon size={14} /> Upload folder
+                {/* @ts-ignore */}
+                <input type="file" webkitdirectory="" directory="" multiple className="hidden" onChange={(e) => { handleFolderUpload(e); setMobileMenuOpen(false); }} />
+              </label>
+
+              <button onClick={() => { disconnect(); setMobileMenuOpen(false); }} className="btn btn-secondary text-xs py-1 px-2 flex items-center gap-1 w-full justify-start text-red-600">
+                <LogOut size={15} /> Disconnect
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       <div className="flex flex-1 w-full overflow-hidden">
@@ -1723,9 +1776,9 @@ function App() {
 
                 {/* Content toolbar: search + type (left) + per-page + showing/pagination (right) */}
                 {!loading && (
-                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm text-beige-700">
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm text-beige-700 overflow-x-hidden">
                     {/* Left: search bar + search type dropdown (grows but capped) */}
-                    <div className="flex flex-1 items-center gap-2 min-w-[180px] max-w-md">
+                    <div className="flex flex-1 items-center gap-2 min-w-[120px] sm:min-w-[180px] max-w-md">
                       <input
                         type="text"
                         value={search}
@@ -1743,8 +1796,8 @@ function App() {
                       </select>
                     </div>
 
-                    {/* Controls: per-page + page nav */}
-                    <div className="flex items-center gap-2 shrink-0">
+                    {/* Controls: per-page + page nav (mobile friendly) */}
+                    <div className="flex items-center gap-1 sm:gap-2 shrink-0 text-xs min-w-fit">
                       <select
                         value={pageSize}
                         onChange={(e) => {
@@ -1753,7 +1806,7 @@ function App() {
                           setPageSize(newSize)
                           setCurrentPage(1)
                         }}
-                        className="input text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2 tabular-nums"
+                        className="input text-[10px] py-0.5 px-1 sm:text-xs sm:py-1 sm:px-1.5 tabular-nums"
                         title="Items per page"
                       >
                         <option value={100}>100</option>
@@ -1762,38 +1815,56 @@ function App() {
                         <option value="all">All</option>
                       </select>
 
+                      {/* View toggle: grid / list (moved to nav bar) */}
+                      <div className="flex items-center border border-beige-300 bg-white rounded-lg overflow-hidden text-xs shadow-sm flex-shrink-0 min-w-[60px]">
+                        <button
+                          onClick={() => setViewMode('grid')}
+                          className={`px-2 py-1.5 sm:px-2.5 sm:py-1.5 flex items-center transition-colors ${viewMode === 'grid' ? 'bg-beige-300 text-warm-900' : 'text-beige-600 hover:bg-beige-100 hover:text-warm-800'}`}
+                          title="Grid view (preview)"
+                        >
+                          <LayoutGrid size={15} />
+                        </button>
+                        <button
+                          onClick={() => setViewMode('list')}
+                          className={`px-2 py-1.5 sm:px-2.5 sm:py-1.5 flex items-center transition-colors ${viewMode === 'list' ? 'bg-beige-300 text-warm-900' : 'text-beige-600 hover:bg-beige-100 hover:text-warm-800'}`}
+                          title="List view"
+                        >
+                          <List size={15} />
+                        </button>
+                      </div>
+
                       {totalPages > 1 && (
-                        <div className="flex items-center gap-1">
-                          <span className="tabular-nums text-beige-600 whitespace-nowrap">
+                        <div className="flex items-center gap-0.5 sm:gap-1">
+                          <span className="tabular-nums text-beige-600 text-[10px] sm:text-xs whitespace-nowrap">
                             Page {currentPage} / {totalPages}
                           </span>
 
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-0.5">
                             <button
                               onClick={() => setCurrentPage(1)}
                               disabled={currentPage === 1}
-                              className="btn btn-secondary text-xs py-0.5 px-1.5 disabled:opacity-50"
+                              className="btn btn-secondary text-[10px] py-0.5 px-1 hidden sm:inline disabled:opacity-50"
                             >
                               First
                             </button>
                             <button
                               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                               disabled={currentPage === 1}
-                              className="btn btn-secondary text-xs py-0.5 px-1.5 flex items-center gap-1 disabled:opacity-50"
+                              className="btn btn-secondary text-[10px] py-0.5 px-1 flex items-center gap-0.5 disabled:opacity-50"
                             >
-                              <ChevronLeft size={13} /> Prev
+                              <ChevronLeft size={12} /> <span className="hidden sm:inline">Prev</span>
                             </button>
                             <button
                               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                               disabled={currentPage === totalPages}
-                              className="btn btn-secondary text-xs py-0.5 px-1.5 flex items-center gap-1 disabled:opacity-50"
+                              className="btn btn-secondary text-[10px] py-0.5 px-1 flex items-center gap-0.5 disabled:opacity-50"
                             >
-                              Next <ChevronRight size={13} />
+                              <span className="hidden sm:inline">Next</span> <ChevronRight size={12} />
                             </button>
                             <button
                               onClick={() => setCurrentPage(totalPages)}
                               disabled={currentPage === totalPages}
-                              className="btn btn-secondary text-xs py-0.5 px-1.5 disabled:opacity-50"
+                              className="btn btn-secondary text-[10px] py-0.5 px-1 hidden sm:inline disabled:opacity-50"
                             >
                               Last
                             </button>
