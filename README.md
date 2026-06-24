@@ -1,4 +1,4 @@
-# Family Storage
+# Minstorage
 
 ## How to get a free trial for minio
 - go to the min.io website
