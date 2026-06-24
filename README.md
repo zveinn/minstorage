@@ -23,13 +23,86 @@ be reachable from clients at all — only the backend needs to reach it.
 > Regenerate these with the helper in [`screenshots/`](screenshots/) — see its
 > usage at the top of [`screenshots/capture.mjs`](screenshots/capture.mjs).
 
+## Install (no build needed)
+
+For non-developers: download the prebuilt binaries and run them. No Go or
+Node.js required — just MinIO and the MinStorage release.
+
+### 1. Download and start MinIO (3-drive local setup)
+
+Download the MinIO server for your platform from [dl.min.io](https://dl.min.io):
+
+```bash
+# Linux (amd64)
+wget https://dl.min.io/server/minio/release/linux-amd64/minio
+chmod +x minio
+
+# macOS (Apple Silicon): https://dl.min.io/server/minio/release/darwin-arm64/minio
+# Windows (amd64):        https://dl.min.io/server/minio/release/windows-amd64/minio.exe
+```
+
+Create three local drive folders and start MinIO across them:
+
+```bash
+mkdir -p ~/minio-data/disk{1,2,3}
+
+export MINIO_ROOT_USER=minioadmin
+export MINIO_ROOT_PASSWORD=minioadmin
+
+./minio server ~/minio-data/disk{1...3} \
+  --address ":9000" \
+  --console-address ":9001"
+```
+
+- MinIO's S3 API is now at `http://127.0.0.1:9000` (user `minioadmin`, password `minioadmin`).
+- Spreading data across 3 drives turns on erasure coding, so the setup can
+  survive one drive failing. Use more drives / nodes for real deployments.
+- Mind the brace styles: the shell needs `{1,2,3}` for `mkdir`, while MinIO
+  expands its own `{1...3}` (three dots).
+
+Open the MinIO Console at `http://127.0.0.1:9001` (same credentials) to create a
+bucket for your files.
+
+### 2. Download and run MinStorage
+
+Grab the binary for your platform from the
+[latest release](https://github.com/zveinn/minstorage/releases/latest):
+
+| Platform | File |
+| --- | --- |
+| Linux (amd64) | `minstorage-linux-amd64` |
+| Linux (arm64) | `minstorage-linux-arm64` |
+| macOS (Intel) | `minstorage-darwin-amd64` |
+| macOS (Apple Silicon) | `minstorage-darwin-arm64` |
+| Windows (amd64) | `minstorage-windows-amd64.exe` |
+
+```bash
+# example: Linux amd64
+chmod +x minstorage-linux-amd64
+./minstorage-linux-amd64 \
+  --address 0.0.0.0:7002 \
+  --minio http://127.0.0.1:9000 \
+  --user minioadmin \
+  --pass minioadmin
+```
+
+Then open `http://localhost:7002` in your browser and log in with your MinIO
+user and password (`minioadmin` / `minioadmin` above).
+
+- `--minio` points at the MinIO S3 API from step 1; `--user` / `--pass` are the
+  MinIO credentials.
+- MinStorage proxies S3 traffic to MinIO, so only MinStorage needs to be
+  reachable from your browser — MinIO does not need CORS or public access.
+- On macOS, if the binary is blocked as unidentified, allow it with
+  `xattr -d com.apple.quarantine ./minstorage-darwin-arm64`.
+
 ## What you need
 
 - Go 1.25 or newer
 - Node.js 20 or newer
 - A running MinIO server
 
-## Setup, step by step
+## Build from source (for developers)
 
 ### 1. Build the web app
 
