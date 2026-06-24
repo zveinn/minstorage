@@ -109,13 +109,13 @@ You can hand someone a one-time link that lets them create their own MinIO user
 `signup` subcommand with the address people will use to reach MinStorage:
 
 ```bash
-./minstorage-linux-amd64 signup --signupHostPort localhost:7002
+./minstorage-linux-amd64 signup --signupHostPort [external_ip/domain]:7002
 ```
 
 It prints a one-time URL, e.g.:
 
 ```
-http://localhost:7002/signup/2b7c9f1e-...-e9
+http://[external_ip/domain]:7002/signup/2b7c9f1e-...-e9
 ```
 
 - Run it from the **same folder** as the running server — they share the token
