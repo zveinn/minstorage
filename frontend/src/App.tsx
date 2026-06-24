@@ -284,6 +284,7 @@ function App() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [pageSize, setPageSize] = useState<100 | 200 | 400 | 'all'>(100)
   const [currentPage, setCurrentPage] = useState(1)
+  const [sortMode, setSortMode] = useState<'name' | 'date'>('name')
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
@@ -377,6 +378,7 @@ function App() {
           let targetViewMode: 'grid' | 'list' = 'grid'
           let targetPageSize: 100 | 200 | 400 | 'all' = 100
           let targetCurrentPage = 1
+          let targetSortMode: 'name' | 'date' = 'name'
           try {
             const saved = sessionStorage.getItem(STORAGE_STATE_KEY)
             if (saved) {
@@ -402,6 +404,9 @@ function App() {
               if (typeof parsedState.currentPage === 'number' && parsedState.currentPage > 0) {
                 targetCurrentPage = parsedState.currentPage
               }
+              if (parsedState.sortMode === 'name' || parsedState.sortMode === 'date') {
+                targetSortMode = parsedState.sortMode
+              }
             }
           } catch {}
 
@@ -421,6 +426,9 @@ function App() {
             }
             if (targetPageSize !== pageSize) {
               setPageSize(targetPageSize)
+            }
+            if (targetSortMode !== sortMode) {
+              setSortMode(targetSortMode)
             }
             setSelectedBucket(bucketToUse)
             setCurrentPrefix(prefixToUse)
@@ -461,10 +469,11 @@ function App() {
         viewMode,
         pageSize,
         currentPage,
+        sortMode,
       }
       sessionStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state))
     }
-  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, pageSize, currentPage, isLoggedIn])
+  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, pageSize, currentPage, sortMode, isLoggedIn])
 
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
@@ -497,6 +506,7 @@ function App() {
       setViewMode('grid')
       setPageSize(100)
       setCurrentPage(1)
+      setSortMode('name')
 
       if (bucketList.length > 0) {
         // Prefer user's personal bucket over "shared"
@@ -535,6 +545,7 @@ function App() {
     setViewMode('grid')
     setPageSize(100)
     setCurrentPage(1)
+    setSortMode('name')
     toast.info('Disconnected')
   }
 
@@ -614,10 +625,10 @@ function App() {
     }
   }, [showNotes, searchType, items, selectedBucket, client])
 
-  // Reset to page 1 on search or explicit page size change
+  // Reset to page 1 on search or explicit page size / sort change
   useEffect(() => {
     setCurrentPage(1)
-  }, [search, searchType, pageSize])
+  }, [search, searchType, pageSize, sortMode])
 
   const navigateTo = (prefix: string) => {
     if (!selectedBucket || !client || !creds) return
@@ -664,9 +675,17 @@ function App() {
     }
     return [...result].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+
+      if (sortMode === 'date') {
+        const dateA = a.lastModified ? a.lastModified.getTime() : 0
+        const dateB = b.lastModified ? b.lastModified.getTime() : 0
+        if (dateB !== dateA) return dateB - dateA // newest first
+        return a.name.localeCompare(b.name)
+      }
+
       return a.name.localeCompare(b.name)
     })
-  }, [items, search, searchType, notes])
+  }, [items, search, searchType, notes, sortMode])
 
   // Client-side pagination over the filtered + sorted results
   const visibleItems = useMemo(() => {
@@ -1797,7 +1816,7 @@ function App() {
                     </div>
 
                     {/* Controls: per-page + page nav (mobile friendly) */}
-                    <div className="flex items-center gap-1 sm:gap-2 shrink-0 text-xs min-w-fit">
+                    <div className="flex items-center gap-1 sm:gap-2 shrink-0 text-xs">
                       <select
                         value={pageSize}
                         onChange={(e) => {
@@ -1806,13 +1825,23 @@ function App() {
                           setPageSize(newSize)
                           setCurrentPage(1)
                         }}
-                        className="input text-[10px] py-0.5 px-1 sm:text-xs sm:py-1 sm:px-1.5 tabular-nums"
+                        className="input text-[10px] py-0.5 px-1 sm:text-xs sm:py-1 sm:px-1.5 tabular-nums w-14 sm:w-16"
                         title="Items per page"
                       >
                         <option value={100}>100</option>
                         <option value={200}>200</option>
                         <option value={400}>400</option>
                         <option value="all">All</option>
+                      </select>
+
+                      <select
+                        value={sortMode}
+                        onChange={(e) => setSortMode(e.target.value as 'name' | 'date')}
+                        className="input text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 w-28 sm:w-32 flex-shrink-0"
+                        title="Sort by"
+                      >
+                        <option value="name">Alphabetical</option>
+                        <option value="date">Upload date</option>
                       </select>
 
                       {/* View toggle: grid / list (moved to nav bar) */}
