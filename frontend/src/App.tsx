@@ -13,7 +13,7 @@ import {
 import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
-  Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
+  Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
   LayoutGrid, List
 } from 'lucide-react'
@@ -1412,12 +1412,6 @@ function App() {
     e.preventDefault()
   }
 
-  const refresh = () => {
-    if (selectedBucket && client && creds) {
-      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
-    }
-  }
-
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     connect(loginForm)
@@ -1539,13 +1533,34 @@ function App() {
       {/* Header */}
       <header className="border-b border-beige-200 bg-white/80 backdrop-blur sticky top-0 z-50">
         <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4 overflow-hidden">
-          {/* Current location (on the left) */}
+          {/* Current location (on the left) with drive dropdown */}
           {selectedBucket && (
             <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap text-xs sm:text-sm py-1">
               <div className="flex items-center gap-1">
                 <button onClick={goHome} className="flex items-center gap-1 hover:text-beige-700 text-warm-900">
-                  <Home size={14} /> <span className="truncate max-w-[6rem] sm:max-w-none">{selectedBucket}</span>
+                  <Home size={14} />
                 </button>
+                <select
+                  value={selectedBucket}
+                  onChange={(e) => {
+                    const newBucket = e.target.value;
+                    if (newBucket && newBucket !== selectedBucket) {
+                      selectBucket(newBucket);
+                    }
+                  }}
+                  className="bg-transparent border-0 p-0 font-medium text-warm-900 cursor-pointer focus:outline-none text-xs sm:text-sm"
+                  title="Select drive"
+                >
+                  {(() => {
+                    const home = buckets.find(b => b !== 'shared');
+                    return home ? (
+                      <option value={home}>{home}</option>
+                    ) : null;
+                  })()}
+                  {buckets.includes('shared') && (
+                    <option value="shared">Shared</option>
+                  )}
+                </select>
                 {breadcrumbs.map((crumb, idx) => (
                   <span key={idx} className="flex items-center gap-0.5 text-beige-500 shrink-0">
                     <ChevronRight size={12} />
@@ -1625,24 +1640,6 @@ function App() {
               </button>
             </div>
 
-            {selectedBucket && buckets.includes('shared') && (
-              <button
-                onClick={() => {
-                  const target = selectedBucket === 'shared'
-                    ? (buckets.find(b => b !== 'shared') || buckets[0])
-                    : 'shared'
-                  if (target && target !== selectedBucket) {
-                    selectBucket(target)
-                  }
-                }}
-                className={`btn ${selectedBucket === 'shared' ? 'btn-primary' : 'btn-secondary'} text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2 flex items-center gap-1`}
-                title={selectedBucket === 'shared' ? 'Switch to your personal drive' : 'Access the shared drive'}
-              >
-                {selectedBucket === 'shared' ? <Home size={14} /> : <Folder size={14} />}
-                <span className="hidden sm:inline">{selectedBucket === 'shared' ? 'My Drive' : 'Shared'}</span>
-              </button>
-            )}
-
             {selectedBucket && (
               <button onClick={createFolder} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
                 <FolderPlus size={14} /> <span className="hidden sm:inline">Create folder</span>
@@ -1677,13 +1674,6 @@ function App() {
               />
             </label>
 
-            <button onClick={refresh} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-              <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
-            </button>
-
-            <div className="hidden md:block px-2 py-0.5 sm:px-3 sm:py-1 rounded-full bg-beige-100 text-beige-700 text-[10px] sm:text-xs font-medium ml-1">
-              {creds?.endpoint}
-            </div>
             <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-2 sm:px-3.5 gap-2" title="Disconnect">
               <LogOut size={15} />
               <span className="hidden sm:inline">Disconnect</span>

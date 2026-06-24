@@ -56,7 +56,28 @@ go run main.go
   ```
 - You can also use the `ADDRESS` env var, or the legacy `PORT` env var.
 - Image preview cache lives in `./previews` (override with `PREVIEW_CACHE_DIR`)
-- Open the address you configured (e.g. **http://localhost:8080**)
+
+### Automatic HTTPS / Let's Encrypt
+
+Use `--cert` (or `-c`) to enable automatic TLS certificates via Let's Encrypt:
+
+```bash
+go run main.go --cert=meow.com
+# or
+go run main.go -c example.com --address 0.0.0.0:443
+```
+
+- When `--cert=example.com` is provided:
+  - The server automatically obtains (or loads from cache) a valid certificate for the domain.
+  - Auto-renews the certificate before expiry (handled by Go's `autocert`).
+  - ACME HTTP-01 challenges are served on port `:80` (required; must be publicly reachable for the domain).
+  - The main SPA + API is served over HTTPS (on `:443` by default, or the port from `--address`).
+  - Non-HTTPS requests are automatically redirected to HTTPS.
+- Certs + keys are cached in the `previews/autocert/` directory (so they persist across restarts).
+- **Requirements**: The binary must be able to bind to ports 80 and 443 (usually run as root, via systemd with caps, docker with host ports, or behind a reverse proxy that forwards the challenges).
+- The domain must point (DNS A/AAAA) to the server.
+
+- Open **https://yourdomain.com** (not http).
 
 ### 3. Login
 
