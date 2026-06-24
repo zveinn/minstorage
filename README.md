@@ -48,6 +48,8 @@ mkdir -p ~/minio-data/disk{1,2,3}
 
 export MINIO_ROOT_USER=minioadmin
 export MINIO_ROOT_PASSWORD=minioadmin
+# Allow data folders on your system/root drive (needed for this local setup)
+export MINIO_CI_CD=true
 
 ./minio server ~/minio-data/disk{1...3} \
   --address ":9000" \
@@ -57,6 +59,10 @@ export MINIO_ROOT_PASSWORD=minioadmin
 - MinIO's S3 API is now at `http://127.0.0.1:9000` (user `minioadmin`, password `minioadmin`).
 - Spreading data across 3 drives turns on erasure coding, so the setup can
   survive one drive failing. Use more drives / nodes for real deployments.
+- `MINIO_CI_CD=true` is required here because MinIO refuses to use drives that
+  live on the root filesystem (a safety guard). Since `~/minio-data` is on your
+  root drive, this flag disables that check. With dedicated drives/partitions
+  you can drop it.
 - Mind the brace styles: the shell needs `{1,2,3}` for `mkdir`, while MinIO
   expands its own `{1...3}` (three dots).
 
