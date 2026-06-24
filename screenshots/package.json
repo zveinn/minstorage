@@ -1,0 +1,13 @@
+{
+  "name": "minstorage-screenshots",
+  "version": "1.0.0",
+  "description": "Capture desktop/tablet/mobile screenshots of the running MinStorage app for the README",
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}

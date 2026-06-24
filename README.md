@@ -14,6 +14,15 @@ left intact (no re-signing). Because the browser only ever connects to the
 backend's own origin, **MinIO needs no CORS configuration** and does not have to
 be reachable from clients at all — only the backend needs to reach it.
 
+## Screenshots
+
+| Desktop | Tablet | Mobile |
+| --- | --- | --- |
+| ![Desktop](screenshots/images/desktop.png) | ![Tablet](screenshots/images/tablet.png) | ![Mobile](screenshots/images/mobile.png) |
+
+> Regenerate these with the helper in [`screenshots/`](screenshots/) — see its
+> usage at the top of [`screenshots/capture.mjs`](screenshots/capture.mjs).
+
 ## What you need
 
 - Go 1.25 or newer
