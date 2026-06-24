@@ -15,7 +15,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
   LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
-  LayoutGrid, List
+  LayoutGrid, List, Menu
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -277,6 +277,7 @@ function App() {
   // Folder hierarchy for the selected bucket (left sidebar)
   const [prefixChildren, setPrefixChildren] = useState<Record<string, string[]>>({})
   const [expandedPrefixes, setExpandedPrefixes] = useState<Set<string>>(new Set())
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const [isDragSelecting, setIsDragSelecting] = useState(false)
@@ -539,6 +540,7 @@ function App() {
     setCurrentPrefix('')
     setSearch('')
     clearSelection()
+    setSidebarOpen(false)
     await loadObjects(bucket, '', activeClient, activeCreds, showDeleted)
   }, [client, creds, showDeleted])
 
@@ -604,6 +606,7 @@ function App() {
     setCurrentPrefix(prefix)
     setSearch('')
     clearSelection()
+    setSidebarOpen(false)
     loadObjects(selectedBucket, prefix, client, creds, showDeleted)
 
     // Auto-expand the path in the sidebar tree
@@ -625,7 +628,10 @@ function App() {
   }
 
   const goHome = () => {
-    if (selectedBucket) navigateTo('')
+    if (selectedBucket) {
+      setSidebarOpen(false)
+      navigateTo('')
+    }
   }
 
   const breadcrumbs = useMemo(() => {
@@ -1523,7 +1529,7 @@ function App() {
                 <p className="text-xs text-beige-700 mt-1">Auto-filled from current host + (port - 2). Edit to override. No protocol.</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-1.5 text-warm-900">Access Key</label>
                   <input
@@ -1591,16 +1597,25 @@ function App() {
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
       <header className="border-b border-beige-200 bg-white/80 backdrop-blur sticky top-0 z-50">
-        <div className="px-6 h-16 flex items-center gap-4">
+        <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4">
           {/* Left: logo + searchbar */}
           <div className="flex items-center gap-3 flex-1 min-w-0">
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="w-9 h-9 rounded-xl bg-beige-300 flex items-center justify-center">
-                <Folder size={20} className="text-beige-700" />
-              </div>
-              <div>
-                <div className="font-semibold tracking-tight">Family Storage</div>
-                <div className="text-[10px] text-beige-600 -mt-0.5">MinIO • Local</div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="lg:hidden btn-ghost p-1 -ml-1"
+                aria-label="Toggle sidebar"
+              >
+                <Menu size={20} />
+              </button>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-beige-300 flex items-center justify-center">
+                  <Folder size={18} className="text-beige-700" />
+                </div>
+                <div className="hidden sm:block">
+                  <div className="font-semibold tracking-tight text-sm sm:text-base">Family Storage</div>
+                  <div className="text-[9px] sm:text-[10px] text-beige-600 -mt-0.5">MinIO • Local</div>
+                </div>
               </div>
             </div>
 
@@ -1610,42 +1625,58 @@ function App() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search..."
-                className="input flex-1 min-w-[12rem] text-sm py-1.5"
+                className="input flex-1 min-w-[6rem] sm:min-w-[10rem] lg:min-w-[12rem] text-sm py-1 sm:py-1.5"
               />
             )}
           </div>
 
           {/* Right: dropdown + endpoint + disconnect */}
-          <div className="flex items-center gap-3 text-sm shrink-0">
+          <div className="flex items-center gap-2 text-sm shrink-0">
             {selectedBucket && (
               <select
                 value={searchType}
                 onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
-                className="input text-sm py-1.5 px-2 w-20"
+                className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 w-16 sm:w-20"
               >
                 <option value="name">Name</option>
                 <option value="note">Note</option>
               </select>
             )}
 
-            <div className="px-3 py-1 rounded-full bg-beige-100 text-beige-700 text-xs font-medium">
+            <div className="hidden md:block px-2 py-0.5 sm:px-3 sm:py-1 rounded-full bg-beige-100 text-beige-700 text-[10px] sm:text-xs font-medium">
               {creds?.endpoint}
             </div>
-            <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-3.5 gap-2">
-              <LogOut size={15} /> Disconnect
+            <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-2 sm:px-3.5 gap-2" title="Disconnect">
+              <LogOut size={15} />
+              <span className="hidden sm:inline">Disconnect</span>
             </button>
           </div>
         </div>
       </header>
 
       <div className="flex flex-1 w-full">
-          {/* Sidebar */}
-          <div className="w-48 sm:w-56 md:w-64 border-r border-beige-200 bg-white p-3 sm:p-4 flex flex-col">
+          {/* Mobile backdrop */}
+          {sidebarOpen && (
+            <div 
+              className="fixed inset-0 bg-black/30 z-50 lg:hidden" 
+              onClick={() => setSidebarOpen(false)} 
+            />
+          )}
+
+          {/* Sidebar (drawer on mobile, always visible on lg+) */}
+          <div 
+            className={`fixed lg:static inset-y-0 left-0 z-[60] w-64 lg:w-48 border-r border-beige-200 bg-white p-3 sm:p-4 flex flex-col transform transition-transform duration-200 ease-in-out lg:transform-none lg:translate-x-0 overflow-y-auto ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
+          >
           <div className="flex items-center justify-between px-1 mb-3">
             <div className="uppercase text-xs tracking-[1px] font-semibold text-beige-600">Buckets</div>
-            <button onClick={refresh} className="btn-ghost p-1.5 rounded-md" title="Refresh">
-              <RefreshCw size={15} />
-            </button>
+            <div className="flex items-center">
+              <button onClick={refresh} className="btn-ghost p-1.5 rounded-md" title="Refresh">
+                <RefreshCw size={15} />
+              </button>
+              <button onClick={() => setSidebarOpen(false)} className="lg:hidden btn-ghost p-1.5" title="Close">
+                <X size={15} />
+              </button>
+            </div>
           </div>
 
           {buckets.length === 0 && (
@@ -1683,17 +1714,17 @@ function App() {
 
         {/* Main */}
         <div className="flex-1 flex flex-col min-w-0">
-          <div className="h-14 border-b border-beige-200 bg-white flex items-center px-4 sm:px-6 gap-3">
-            <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="min-h-14 border-b border-beige-200 bg-white flex items-center px-2 sm:px-4 lg:px-6 gap-2 overflow-x-auto">
+            <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap text-xs sm:text-sm py-1">
               {selectedBucket && (
-                <div className="flex items-center gap-1 text-sm">
-                  <button onClick={goHome} className="flex items-center gap-1.5 hover:text-beige-700 text-warm-900">
-                    <Home size={15} /> {selectedBucket}
+                <div className="flex items-center gap-1">
+                  <button onClick={goHome} className="flex items-center gap-1 hover:text-beige-700 text-warm-900">
+                    <Home size={14} /> <span className="truncate max-w-[6rem] sm:max-w-none">{selectedBucket}</span>
                   </button>
                   {breadcrumbs.map((crumb, idx) => (
-                    <span key={idx} className="flex items-center gap-1 text-beige-500">
-                      <ChevronRight size={14} />
-                      <button onClick={() => navigateTo(crumb.prefix)} className="hover:text-beige-700 text-warm-800">
+                    <span key={idx} className="flex items-center gap-0.5 text-beige-500 shrink-0">
+                      <ChevronRight size={12} />
+                      <button onClick={() => navigateTo(crumb.prefix)} className="hover:text-beige-700 text-warm-800 truncate max-w-[5rem] sm:max-w-[8rem]">
                         {crumb.label}
                       </button>
                     </span>
@@ -1702,31 +1733,31 @@ function App() {
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto whitespace-nowrap">
               {isInSelectMode && (
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
-                    {selectedItems.size} selected
+                <div className="flex items-center gap-1 text-xs sm:text-sm">
+                  <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
+                    {selectedItems.size}
                   </span>
                   <button
                     onClick={downloadSelectedItems}
-                    className="btn btn-primary text-xs py-1 px-2"
+                    className="btn btn-primary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2"
                   >
-                    Download selected
+                    Download
                   </button>
                   <button
                     onClick={restoreSelectedItems}
-                    className="btn btn-secondary text-xs py-1 px-2 text-green-600 hover:bg-green-50"
+                    className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-green-600 hover:bg-green-50"
                   >
-                    Restore selected
+                    Restore
                   </button>
                   <button
                     onClick={deleteSelectedItems}
-                    className="btn btn-secondary text-xs py-1 px-2 text-red-600 hover:bg-red-50"
+                    className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-red-600 hover:bg-red-50"
                   >
-                    Delete selected
+                    Delete
                   </button>
-                  <button onClick={clearSelection} className="btn btn-secondary text-xs py-1 px-2">
+                  <button onClick={clearSelection} className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2">
                     Clear
                   </button>
                 </div>
@@ -1734,49 +1765,49 @@ function App() {
 
               <button
                 onClick={() => setShowDeleted(!showDeleted)}
-                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-xs py-1 px-2 flex items-center gap-1`}
+                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
                 title={showDeleted ? 'Hide deleted photos' : 'Show deleted photos (including delete markers)'}
               >
-                {showDeleted ? <EyeOff size={14} /> : <Eye size={14} />}
-                {showDeleted ? 'Hide deleted' : 'Show deleted'}
+                {showDeleted ? <EyeOff size={13} /> : <Eye size={13} />}
+                <span className="hidden sm:inline">{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
               </button>
 
               <button
                 onClick={() => setShowNotes(!showNotes)}
-                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-xs py-1 px-2 flex items-center gap-1`}
+                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
                 title={showNotes ? 'Hide notes' : 'Show notes (tooltips on hover when off)'}
               >
-                <MessageSquare size={14} />
-                {showNotes ? 'Hide notes' : 'Show notes'}
+                <MessageSquare size={13} />
+                <span className="hidden sm:inline">{showNotes ? 'Hide notes' : 'Show notes'}</span>
               </button>
 
               {/* View toggle: grid / list (minimal) */}
-              <div className="flex items-center border border-beige-200 rounded-lg overflow-hidden">
+              <div className="flex items-center border border-beige-200 rounded-lg overflow-hidden text-xs">
                 <button
                   onClick={() => setViewMode('grid')}
-                  className={`px-2 py-1 text-xs flex items-center ${viewMode === 'grid' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
+                  className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'grid' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
                   title="Grid view"
                 >
-                  <LayoutGrid size={14} />
+                  <LayoutGrid size={13} />
                 </button>
                 <button
                   onClick={() => setViewMode('list')}
-                  className={`px-2 py-1 text-xs flex items-center ${viewMode === 'list' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
+                  className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'list' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
                   title="List view"
                 >
-                  <List size={14} />
+                  <List size={13} />
                 </button>
               </div>
 
               {selectedBucket && (
-                <button onClick={createFolder} className="btn btn-secondary">
-                  <FolderPlus size={16} /> Create folder
+                <button onClick={createFolder} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+                  <FolderPlus size={14} /> <span className="hidden sm:inline">Create folder</span>
                 </button>
               )}
 
-              <label className="btn btn-primary cursor-pointer">
-                <UploadIcon size={16} />
-                Upload files
+              <label className="btn btn-primary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+                <UploadIcon size={14} />
+                <span className="hidden sm:inline">Upload files</span>
                 <input
                   type="file"
                   multiple
@@ -1788,9 +1819,9 @@ function App() {
                 />
               </label>
 
-              <label className="btn btn-secondary cursor-pointer">
-                <UploadIcon size={16} />
-                Upload folder
+              <label className="btn btn-secondary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+                <UploadIcon size={14} />
+                <span className="hidden sm:inline">Upload folder</span>
                 <input
                   type="file"
                   // @ts-ignore - webkit specific
@@ -1802,15 +1833,15 @@ function App() {
                 />
               </label>
 
-              <button onClick={refresh} className="btn btn-secondary">
-                <RefreshCw size={16} /> Refresh
+              <button onClick={refresh} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+                <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
               </button>
             </div>
           </div>
 
           <div
             ref={contentRef}
-            className={`flex-1 p-4 sm:p-6 overflow-auto relative ${isDragSelecting ? 'select-none' : ''}`}
+            className={`flex-1 p-3 sm:p-6 overflow-auto relative ${isDragSelecting ? 'select-none' : ''}`}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onMouseDown={handleMouseDown}
@@ -1827,7 +1858,7 @@ function App() {
               </div>
             ) : (
               <>
-                <div className="mb-5 border border-dashed border-beige-300 rounded-2xl bg-white/60 py-3 text-center text-sm text-beige-700">
+                <div className="mb-4 sm:mb-5 border border-dashed border-beige-300 rounded-2xl bg-white/60 py-2 sm:py-3 text-center text-xs sm:text-sm text-beige-700">
                   Drop files here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
                 </div>
 
@@ -1863,11 +1894,11 @@ function App() {
                     </div>
                   )
                 ) : filteredItems.length === 0 ? (
-                  <div className="text-center py-16 text-beige-700">
+                  <div className="text-center py-8 sm:py-16 text-beige-700">
                     {search ? 'No matching files' : 'This folder is empty'}
                   </div>
                 ) : viewMode === 'grid' ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4 items-start">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 sm:gap-4 items-start">
                     {filteredItems.map((item, index) => (
                       <div 
                         key={index} 
@@ -1887,9 +1918,10 @@ function App() {
                         onMouseLeave={() => setTooltip(null)}
                       >
                         {item.isDir ? (
-                          <button onClick={() => navigateTo(item.fullPath)} className="flex-1 p-3 flex flex-col">
-                            <div className="thumbnail w-full h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
-                              <Folder size={46} className="text-beige-600" />
+                          <button onClick={() => navigateTo(item.fullPath)} className="flex-1 p-2 sm:p-3 flex flex-col">
+                            <div className="thumbnail w-full h-32 sm:h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
+                              <Folder size={36} className="sm:hidden text-beige-600" />
+                              <Folder size={46} className="hidden sm:block text-beige-600" />
                             </div>
                             <div className="pt-3 px-1">
                               <div className="font-medium text-sm truncate">{item.name}</div>
@@ -1929,8 +1961,9 @@ function App() {
                                 </div>
 
                                 {item.isDeleted ? (
-                                  <div className="thumbnail w-full h-40 bg-red-50 flex items-center justify-center">
-                                    <Trash2 size={42} className="text-red-400" />
+                                  <div className="thumbnail w-full h-32 sm:h-40 bg-red-50 flex items-center justify-center">
+                                    <Trash2 size={32} className="sm:hidden text-red-400" />
+                                    <Trash2 size={42} className="hidden sm:block text-red-400" />
                                   </div>
                                 ) : isImage(item.name) && creds ? (
                                   <ObjectThumbnail
@@ -1939,14 +1972,15 @@ function App() {
                                     creds={creds}
                                   />
                                 ) : (
-                                  <div className="thumbnail w-full h-40 bg-beige-50">
-                                    <File size={42} className="text-beige-500" />
+                                  <div className="thumbnail w-full h-32 sm:h-40 bg-beige-50">
+                                    <File size={32} className="sm:hidden text-beige-500" />
+                                    <File size={42} className="hidden sm:block text-beige-500" />
                                   </div>
                                 )}
                               </div>
 
-                              {/* Hover action buttons - top right over the photo */}
-                              <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all z-10">
+                              {/* Action buttons - always on mobile, hover on desktop */}
+                              <div className="absolute top-2 right-2 flex gap-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-10">
                                 {item.isDeleted ? (
                                   <button
                                     onClick={(e) => { e.stopPropagation(); restoreFile(item); }}
@@ -1991,7 +2025,7 @@ function App() {
                             </div>
 
                             {/* Compact bottom info: only name + date + size */}
-                            <div className="p-2.5">
+                            <div className="p-2 sm:p-2.5">
                               <div
                                 onClick={() => {
                                   if (isInSelectMode) {
@@ -2030,7 +2064,7 @@ function App() {
                       return (
                         <div
                           key={index}
-                          className={`flex items-center gap-3 px-3 py-1.5 group text-sm hover:bg-beige-50 transition-colors ${item.isDeleted ? 'opacity-60' : ''} ${isSelected ? 'bg-blue-50/40' : ''}`}
+                          className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1 sm:py-1.5 group text-sm hover:bg-beige-50 transition-colors ${item.isDeleted ? 'opacity-60' : ''} ${isSelected ? 'bg-blue-50/40' : ''}`}
                           data-fullpath={item.fullPath}
                           data-isdir={item.isDir ? 'true' : 'false'}
                           onMouseEnter={(e) => {
@@ -2077,24 +2111,24 @@ function App() {
 
                           {/* Note (inline if shown) */}
                           {showNotes && !item.isDir && notes[item.fullPath] && (
-                            <div className="max-w-[220px] truncate text-xs text-black" title={notes[item.fullPath]}>
+                            <div className="max-w-[120px] sm:max-w-[180px] truncate text-xs text-black" title={notes[item.fullPath]}>
                               {notes[item.fullPath]}
                             </div>
                           )}
 
                           {/* Size */}
-                          <div className="w-16 text-right text-[11px] text-beige-600 shrink-0 tabular-nums">
+                          <div className="hidden sm:block w-16 text-right text-[11px] text-beige-600 shrink-0 tabular-nums">
                             {item.isDir ? '—' : formatSize(item.size)}
                           </div>
 
                           {/* Date */}
-                          <div className="w-[70px] text-right text-[11px] text-beige-600 shrink-0">
+                          <div className="hidden sm:block w-[70px] text-right text-[11px] text-beige-600 shrink-0">
                             {item.lastModified ? format(item.lastModified, 'MMM d') : '—'}
                           </div>
 
-                          {/* Minimal actions (shown on hover, files only) */}
+                          {/* Minimal actions (always on mobile, hover on desktop) */}
                           {!item.isDir ? (
-                            <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition shrink-0">
+                            <div className="flex gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0">
                               {item.isDeleted ? (
                                 <button onClick={(e) => { e.stopPropagation(); restoreFile(item) }} className="p-1 rounded hover:bg-green-100 text-green-600" title="Restore">
                                   <RotateCcw size={14} />
@@ -2174,8 +2208,8 @@ function App() {
                     <ChevronRight size={16} />
                   </button>
                 </div>
-                <button onClick={() => downloadFile(previewItem)} className="btn btn-secondary text-sm">
-                  <Download size={15} /> Download
+                <button onClick={() => downloadFile(previewItem)} className="btn btn-secondary text-xs sm:text-sm">
+                  <Download size={14} /> <span className="hidden sm:inline">Download</span>
                 </button>
                 <button onClick={closePreview} className="btn btn-ghost p-2">
                   <X size={18} />
