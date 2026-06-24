@@ -14,7 +14,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
-  LogOut, ChevronRight, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
+  LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
   LayoutGrid, List
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -658,6 +658,15 @@ function App() {
       return a.name.localeCompare(b.name)
     })
   }, [items, search, searchType, notes])
+
+  // Images eligible for preview navigation (only non-dirs, non-deleted images in current view)
+  const currentImages = useMemo(() => {
+    return filteredItems.filter(i => !i.isDir && !i.isDeleted && isImage(i.name))
+  }, [filteredItems])
+
+  // For preview nav (computed every render, very cheap)
+  const previewIndex = previewItem ? currentImages.findIndex(i => i.fullPath === previewItem.fullPath) : -1
+  const previewTotal = currentImages.length
 
   const contentRef = useRef<HTMLDivElement>(null)
 
@@ -1408,6 +1417,23 @@ function App() {
     setPreviewUrl(null)
   }
 
+  // Navigate prev/next within the current folder's images (respects current filter/search)
+  const goPrevImage = useCallback(() => {
+    if (!previewItem || currentImages.length === 0) return
+    const idx = currentImages.findIndex(i => i.fullPath === previewItem.fullPath)
+    if (idx > 0) {
+      openPreview(currentImages[idx - 1])
+    }
+  }, [previewItem, currentImages])
+
+  const goNextImage = useCallback(() => {
+    if (!previewItem || currentImages.length === 0) return
+    const idx = currentImages.findIndex(i => i.fullPath === previewItem.fullPath)
+    if (idx >= 0 && idx < currentImages.length - 1) {
+      openPreview(currentImages[idx + 1])
+    }
+  }, [previewItem, currentImages])
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
 
@@ -1455,11 +1481,20 @@ function App() {
       if (e.key === 'Escape') {
         if (previewItem) closePreview()
         if (shareModalOpen) closeShareModal()
+      } else if (previewItem) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          goPrevImage()
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          goNextImage()
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [previewItem, shareModalOpen])
+  }, [previewItem, shareModalOpen, goPrevImage, goNextImage])
 
   // LOGIN SCREEN
   if (!isLoggedIn) {
@@ -2114,8 +2149,31 @@ function App() {
         <div className="modal" onClick={closePreview}>
           <div className="modal-content w-full max-w-5xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b border-beige-200 bg-beige-50">
-              <div className="font-medium truncate pr-4">{previewItem.name}</div>
+              <div className="font-medium truncate pr-4 max-w-[45%]">{previewItem.name}</div>
               <div className="flex items-center gap-2">
+                <div className="flex items-center gap-0.5 mr-1">
+                  <button
+                    onClick={goPrevImage}
+                    disabled={previewIndex <= 0}
+                    className="btn btn-ghost p-1.5 disabled:opacity-40"
+                    title="Previous image"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  {previewTotal > 1 && (
+                    <span className="text-[10px] text-beige-600 px-1 tabular-nums select-none">
+                      {previewIndex + 1} / {previewTotal}
+                    </span>
+                  )}
+                  <button
+                    onClick={goNextImage}
+                    disabled={previewIndex < 0 || previewIndex >= previewTotal - 1}
+                    className="btn btn-ghost p-1.5 disabled:opacity-40"
+                    title="Next image"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
                 <button onClick={() => downloadFile(previewItem)} className="btn btn-secondary text-sm">
                   <Download size={15} /> Download
                 </button>
