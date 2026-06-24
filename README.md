@@ -102,6 +102,31 @@ user and password (`minioadmin` / `minioadmin` above).
 - On macOS, if the binary is blocked as unidentified, allow it with
   `xattr -d com.apple.quarantine ./minstorage-darwin-arm64`.
 
+### 3. (Optional) Invite others with a signup link
+
+You can hand someone a one-time link that lets them create their own MinIO user
+(their own username + password) without sharing the admin credentials. Run the
+`signup` subcommand with the address people will use to reach MinStorage:
+
+```bash
+./minstorage-linux-amd64 signup --signupHostPort localhost:7002
+```
+
+It prints a one-time URL, e.g.:
+
+```
+http://localhost:7002/signup/2b7c9f1e-...-e9
+```
+
+- Run it from the **same folder** as the running server — they share the token
+  store (under `./previews`, or `PREVIEW_CACHE_DIR`), so the running server
+  recognises the link you generated.
+- The link is valid for **24 hours** and works **once**.
+- The running MinStorage must have admin MinIO credentials (the `--user` /
+  `--pass` from step 2), because it creates the new MinIO user on their behalf.
+- Send the link to the person; they open it, pick a username and password, and
+  can then log in to MinStorage with those.
+
 ## What you need
 
 - Go 1.25 or newer
