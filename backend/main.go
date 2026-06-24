@@ -27,6 +27,8 @@ import (
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	madmin "github.com/minio/madmin-go/v3"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 //go:embed all:static
@@ -203,6 +205,62 @@ func main() {
 		backendCreds = "yes"
 	}
 
+	if certDomain == "" {
+		certDomain = os.Getenv("CERT_DOMAIN")
+	}
+	if certDomain == "" {
+		certDomain = os.Getenv("CERT")
+	}
+
+	if certDomain != "" {
+		// Let's Encrypt auto-cert + auto-renewal using golang.org/x/crypto/acme/autocert
+		certCache := filepath.Join(cacheDir, "autocert")
+		if err := os.MkdirAll(certCache, 0700); err != nil {
+			log.Fatalf("failed to create autocert cache dir: %v", err)
+		}
+
+		certManager := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(certDomain),
+			Cache:      autocert.DirCache(certCache),
+		}
+
+		// Start HTTP server on port 80 to handle ACME challenges (required for http-01).
+		// Non-challenge requests are redirected to HTTPS.
+		go func() {
+			redirectToHTTPS := func(w http.ResponseWriter, req *http.Request) {
+				target := "https://" + req.Host + req.URL.RequestURI()
+				http.Redirect(w, req, target, http.StatusMovedPermanently)
+			}
+			challengeHandler := certManager.HTTPHandler(http.HandlerFunc(redirectToHTTPS))
+			log.Printf("[cert] ACME HTTP-01 challenge server listening on :80 for domain %s", certDomain)
+			if err := http.ListenAndServe(":80", challengeHandler); err != nil {
+				log.Printf("[cert] challenge server error (may be expected if not root or port in use): %v", err)
+			}
+		}()
+
+		// Determine HTTPS listen address. Prefer :443 unless user overrode --address to something else.
+		httpsAddr := addr
+		if addr == defaultAddress || addr == "" {
+			httpsAddr = ":443"
+		}
+
+		log.Printf("Family Storage listening on %s (HTTPS with auto cert for %s, preview cache: %s, minio: %s, signup: %s, backend-creds: %s)",
+			httpsAddr, certDomain, cacheDir, effectiveMinio, effectiveSignup, backendCreds)
+
+		server := &http.Server{
+			Addr:      httpsAddr,
+			Handler:   r,
+			TLSConfig: certManager.TLSConfig(),
+		}
+		// ListenAndServeTLS with empty strings uses the TLSConfig from autocert (loads or obtains cert)
+		if err := server.ListenAndServeTLS("", ""); err != nil {
+			log.Fatal(err)
+		}
+		return // not reached
+	}
+
+	// Plain HTTP mode (no --cert)
 	log.Printf("Family Storage listening on %s (preview cache: %s, minio: %s, signup: %s, backend-creds: %s)", addr, cacheDir, effectiveMinio, effectiveSignup, backendCreds)
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatal(err)
@@ -214,6 +272,7 @@ var minioAddress string
 var minioUser string
 var minioPass string
 var signupHostPort string
+var certDomain string
 
 func init() {
 	flag.StringVar(&listenAddress, "address", "", "Address to listen on (e.g. :8080, 0.0.0.0:8080, 127.0.0.1:9000)")
@@ -229,6 +288,9 @@ func init() {
 	flag.StringVar(&minioPass, "p", "", "Shorthand for --pass")
 
 	flag.StringVar(&signupHostPort, "signupHostPort", "", "Host:port to use in generated signup URLs (e.g. 192.168.1.35:8080). Falls back to --minio address if unset.")
+
+	flag.StringVar(&certDomain, "cert", "", "Domain for automatic Let's Encrypt HTTPS cert (e.g. meow.com). If set, auto-loads or obtains cert + enables auto-renewal via ACME. Serves challenges on :80 and HTTPS on resolved address (defaults to :443).")
+	flag.StringVar(&certDomain, "c", "", "Shorthand for --cert")
 }
 
 func resolveListenAddress() string {

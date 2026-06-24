@@ -15,7 +15,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon, RefreshCw,
   LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, MessageSquare,
-  LayoutGrid, List, Menu
+  LayoutGrid, List
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -79,79 +79,98 @@ async function listObjectsWithPrefix(
   prefix: string,
   showDeleted: boolean = false
 ): Promise<{ files: any[]; prefixes: string[] }> {
+  const allFiles: any[] = []
+  const prefixSet = new Set<string>()
+
   if (!showDeleted) {
-    const command = new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: prefix,
-      Delimiter: '/',
-    })
+    let continuationToken: string | undefined
+    let isTruncated = true
+    while (isTruncated) {
+      const command = new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        Delimiter: '/',
+        ContinuationToken: continuationToken,
+      })
 
-    const response = await client.send(command)
+      const response = await client.send(command)
 
-    let prefixes = (response.CommonPrefixes || [])
-      .map((p) => p.Prefix!)
-      .filter(Boolean)
+      ;(response.CommonPrefixes || []).forEach((p) => {
+        if (p.Prefix && p.Prefix !== prefix) prefixSet.add(p.Prefix)
+      })
 
-    prefixes = prefixes.filter(p => p && p !== prefix && p.startsWith(prefix || ''))
+      ;(response.Contents || []).forEach((obj) => {
+        if (obj.Key && obj.Key !== prefix) {
+          allFiles.push({
+            name: obj.Key,
+            size: obj.Size || 0,
+            etag: obj.ETag || '',
+            lastModified: obj.LastModified,
+            isDeleted: false,
+          })
+        }
+      })
 
-    const files = (response.Contents || [])
-      .filter((obj) => obj.Key && obj.Key !== prefix)
-      .map((obj) => ({
-        name: obj.Key!,
-        size: obj.Size || 0,
-        etag: obj.ETag || '',
-        lastModified: obj.LastModified,
-        isDeleted: false,
-      }))
+      continuationToken = response.NextContinuationToken
+      isTruncated = !!response.IsTruncated
+    }
+  } else {
+    // Show deleted: use versions + delete markers (marker-based pagination)
+    let keyMarker: string | undefined
+    let versionIdMarker: string | undefined
+    let isTruncated = true
 
-    return { files, prefixes }
+    while (isTruncated) {
+      const command = new ListObjectVersionsCommand({
+        Bucket: bucket,
+        Prefix: prefix,
+        Delimiter: '/',
+        KeyMarker: keyMarker,
+        VersionIdMarker: versionIdMarker,
+      })
+
+      const response = await client.send(command)
+
+      ;(response.CommonPrefixes || []).forEach((p) => {
+        if (p.Prefix && p.Prefix !== prefix) prefixSet.add(p.Prefix)
+      })
+
+      ;(response.Versions || []).forEach((obj: any) => {
+        if (obj.Key && obj.Key !== prefix && obj.IsLatest) {
+          allFiles.push({
+            name: obj.Key,
+            size: obj.Size || 0,
+            etag: obj.ETag || '',
+            lastModified: obj.LastModified,
+            isDeleted: false,
+          })
+        }
+      })
+
+      ;(response.DeleteMarkers || []).forEach((dm: any) => {
+        if (dm.Key && dm.Key !== prefix && dm.IsLatest) {
+          allFiles.push({
+            name: dm.Key,
+            size: 0,
+            etag: '',
+            lastModified: dm.LastModified,
+            isDeleted: true,
+            versionId: dm.VersionId,
+          })
+        }
+      })
+
+      isTruncated = !!response.IsTruncated
+      keyMarker = response.NextKeyMarker
+      versionIdMarker = response.NextVersionIdMarker
+    }
   }
 
-  // Show deleted: use versions + delete markers
-  const command = new ListObjectVersionsCommand({
-    Bucket: bucket,
-    Prefix: prefix,
-    Delimiter: '/',
-  })
+  const prefixes = Array.from(prefixSet).filter(
+    (p) => p && p !== prefix && p.startsWith(prefix || '')
+  )
 
-  const response = await client.send(command)
-
-  let prefixes = (response.CommonPrefixes || [])
-    .map((p) => p.Prefix!)
-    .filter(Boolean)
-
-  prefixes = prefixes.filter(p => p && p !== prefix && p.startsWith(prefix || ''))
-
-  const files: any[] = []
-
-  // Add current versions (non-deleted latest objects)
-  ;(response.Versions || []).forEach((obj: any) => {
-    if (obj.Key && obj.Key !== prefix && obj.IsLatest) {
-      files.push({
-        name: obj.Key!,
-        size: obj.Size || 0,
-        etag: obj.ETag || '',
-        lastModified: obj.LastModified,
-        isDeleted: false,
-      })
-    }
-  })
-
-  // Add delete markers as deleted items
-  ;(response.DeleteMarkers || []).forEach((dm: any) => {
-    if (dm.Key && dm.Key !== prefix && dm.IsLatest) {
-      files.push({
-        name: dm.Key!,
-        size: 0,
-        etag: '',
-        lastModified: dm.LastModified,
-        isDeleted: true,
-        versionId: dm.VersionId,
-      })
-    }
-  })
-
-  return { files, prefixes }
+  return { files: allFiles, prefixes }
 }
 
 async function listBuckets(client: S3Client): Promise<string[]> {
@@ -263,6 +282,8 @@ function App() {
   const [showDeleted, setShowDeleted] = useState(false)
   const [showNotes, setShowNotes] = useState(false)
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
+  const [pageSize, setPageSize] = useState<100 | 200 | 400 | 'all'>(100)
+  const [currentPage, setCurrentPage] = useState(1)
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
@@ -273,11 +294,6 @@ function App() {
     total: number
   } | null>(null)
 
-
-  // Folder hierarchy for the selected bucket (left sidebar)
-  const [prefixChildren, setPrefixChildren] = useState<Record<string, string[]>>({})
-  const [expandedPrefixes, setExpandedPrefixes] = useState<Set<string>>(new Set())
-  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const [isDragSelecting, setIsDragSelecting] = useState(false)
@@ -324,13 +340,10 @@ function App() {
 
   const isLoggedIn = !!creds && !!client
 
-  // When bucket changes, load its top-level folders for the sidebar tree
+  // When bucket changes, reset notes (sidebar tree logic removed)
   useEffect(() => {
     if (selectedBucket && client) {
-      setPrefixChildren({})
-      setExpandedPrefixes(new Set())
       setNotes({})
-      loadPrefixChildren(selectedBucket, '')
     }
   }, [selectedBucket, client])
 
@@ -360,6 +373,8 @@ function App() {
           let targetShowDeleted = false
           let targetShowNotes = false
           let targetViewMode: 'grid' | 'list' = 'grid'
+          let targetPageSize: 100 | 200 | 400 | 'all' = 100
+          let targetCurrentPage = 1
           try {
             const saved = sessionStorage.getItem(STORAGE_STATE_KEY)
             if (saved) {
@@ -379,11 +394,18 @@ function App() {
               if (parsedState.viewMode === 'list' || parsedState.viewMode === 'grid') {
                 targetViewMode = parsedState.viewMode
               }
+              if (parsedState.pageSize === 100 || parsedState.pageSize === 200 || parsedState.pageSize === 400 || parsedState.pageSize === 'all') {
+                targetPageSize = parsedState.pageSize
+              }
+              if (typeof parsedState.currentPage === 'number' && parsedState.currentPage > 0) {
+                targetCurrentPage = parsedState.currentPage
+              }
             }
           } catch {}
 
           if (bucketList.length > 0) {
-            const bucketToUse = targetBucket || bucketList[0]
+            const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
+            const bucketToUse = targetBucket || preferred
             const prefixToUse = (targetBucket && bucketToUse === targetBucket) ? targetPrefix : ''
             // Set showDeleted and showNotes first so the UI toggle reflects restored state
             if (targetShowDeleted !== showDeleted) {
@@ -395,37 +417,18 @@ function App() {
             if (targetViewMode !== viewMode) {
               setViewMode(targetViewMode)
             }
+            if (targetPageSize !== pageSize) {
+              setPageSize(targetPageSize)
+            }
             setSelectedBucket(bucketToUse)
             setCurrentPrefix(prefixToUse)
             setSearch('')
+            setCurrentPage(targetCurrentPage)
             clearSelection()
             // Load directly with the target prefix and showDeleted
             loadObjects(bucketToUse, prefixToUse, s3Client, parsed, targetShowDeleted).catch(() => {})
 
-            if (prefixToUse) {
-              // Auto-expand the folder tree to the restored prefix
-              setExpandedPrefixes(prev => {
-                const next = new Set(prev)
-                let p = ''
-                prefixToUse.split('/').filter(Boolean).forEach(part => {
-                  p += part + '/'
-                  next.add(p)
-                })
-                return next
-              })
-
-              // Preload children for the path so the sidebar tree shows correctly after refresh
-              let p = ''
-              prefixToUse.split('/').filter(Boolean).forEach(async (part) => {
-                p += part + '/'
-                try {
-                  const { prefixes } = await listObjectsWithPrefix(s3Client, bucketToUse, p, false)
-                  setPrefixChildren(prev => ({ ...prev, [p]: prefixes }))
-                } catch (e) {
-                  console.error('Failed to load prefix children on restore for', p, e)
-                }
-              })
-            }
+            // (sidebar tree restoration removed)
           }
         })
         .catch((err) => {
@@ -454,10 +457,12 @@ function App() {
         showDeleted,
         showNotes,
         viewMode,
+        pageSize,
+        currentPage,
       }
       sessionStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state))
     }
-  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, isLoggedIn])
+  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, pageSize, currentPage, isLoggedIn])
 
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
@@ -488,9 +493,13 @@ function App() {
       setShowNotes(false)
       setNotes({})
       setViewMode('grid')
+      setPageSize(100)
+      setCurrentPage(1)
 
       if (bucketList.length > 0) {
-        await selectBucket(bucketList[0], s3Client, newCreds)
+        // Prefer user's personal bucket over "shared"
+        const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
+        await selectBucket(preferred, s3Client, newCreds)
       } else {
         toast('Connected. No buckets found.')
       }
@@ -519,11 +528,11 @@ function App() {
     setPreviewItem(null)
     setPreviewUrl(null)
     clearSelection()
-    setPrefixChildren({})
-    setExpandedPrefixes(new Set())
     setNotes({})
     setShowNotes(false)
     setViewMode('grid')
+    setPageSize(100)
+    setCurrentPage(1)
     toast.info('Disconnected')
   }
 
@@ -539,8 +548,8 @@ function App() {
     setSelectedBucket(bucket)
     setCurrentPrefix('')
     setSearch('')
+    setCurrentPage(1)
     clearSelection()
-    setSidebarOpen(false)
     await loadObjects(bucket, '', activeClient, activeCreds, showDeleted)
   }, [client, creds, showDeleted])
 
@@ -590,6 +599,7 @@ function App() {
   // Reload listing when showDeleted changes
   useEffect(() => {
     if (selectedBucket && client && creds) {
+      setCurrentPage(1)
       loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
     }
   }, [showDeleted])
@@ -601,35 +611,23 @@ function App() {
     }
   }, [showNotes, searchType, items, selectedBucket, client])
 
+  // Reset to page 1 on search or explicit page size change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, searchType, pageSize])
+
   const navigateTo = (prefix: string) => {
     if (!selectedBucket || !client || !creds) return
     setCurrentPrefix(prefix)
     setSearch('')
+    setCurrentPage(1)
     clearSelection()
-    setSidebarOpen(false)
     loadObjects(selectedBucket, prefix, client, creds, showDeleted)
-
-    // Auto-expand the path in the sidebar tree
-    if (prefix) {
-      setExpandedPrefixes(prev => {
-        const next = new Set(prev)
-        let p = ''
-        prefix.split('/').filter(Boolean).forEach(part => {
-          p += part + '/'
-          next.add(p)
-          // ensure children are loaded for this level
-          if (selectedBucket && !prefixChildren[p]) {
-            loadPrefixChildren(selectedBucket, p)
-          }
-        })
-        return next
-      })
-    }
   }
 
   const goHome = () => {
     if (selectedBucket) {
-      setSidebarOpen(false)
+      setCurrentPage(1)
       navigateTo('')
     }
   }
@@ -665,10 +663,28 @@ function App() {
     })
   }, [items, search, searchType, notes])
 
-  // Images eligible for preview navigation (only non-dirs, non-deleted images in current view)
+  // Client-side pagination over the filtered + sorted results
+  const visibleItems = useMemo(() => {
+    if (pageSize === 'all') return filteredItems
+    const size = pageSize
+    const start = Math.max(0, (currentPage - 1) * size)
+    return filteredItems.slice(start, start + size)
+  }, [filteredItems, pageSize, currentPage])
+
+  const totalPages = useMemo(() => {
+    if (pageSize === 'all') return 1
+    return Math.max(1, Math.ceil(filteredItems.length / pageSize))
+  }, [filteredItems.length, pageSize])
+
+  // Clamp current page if it exceeds total after data changes
+  useEffect(() => {
+    setCurrentPage((cp) => Math.min(Math.max(1, cp), totalPages))
+  }, [totalPages])
+
+  // Images for preview nav are scoped to the current visible page
   const currentImages = useMemo(() => {
-    return filteredItems.filter(i => !i.isDir && !i.isDeleted && isImage(i.name))
-  }, [filteredItems])
+    return visibleItems.filter(i => !i.isDir && !i.isDeleted && isImage(i.name))
+  }, [visibleItems])
 
   // For preview nav (computed every render, very cheap)
   const previewIndex = previewItem ? currentImages.findIndex(i => i.fullPath === previewItem.fullPath) : -1
@@ -677,18 +693,6 @@ function App() {
   const contentRef = useRef<HTMLDivElement>(null)
 
   const isInSelectMode = selectedItems.size > 0
-
-  // Load direct child prefixes (folders) for a given prefix in the bucket
-  const loadPrefixChildren = async (bucket: string, prefix: string) => {
-    if (!client) return
-    try {
-      // Always load structure without deleted filter for tree
-      const { prefixes } = await listObjectsWithPrefix(client, bucket, prefix, false)
-      setPrefixChildren(prev => ({ ...prev, [prefix]: prefixes }))
-    } catch (e) {
-      console.error('Failed to load prefixes for', prefix, e)
-    }
-  }
 
   const loadNotesForItems = async (itemsToLoad: FileItem[]) => {
     if (!selectedBucket || !client) return
@@ -716,68 +720,6 @@ function App() {
     })
     await Promise.all(promises)
     setNotes(newNotes)
-  }
-
-  const togglePrefix = (prefix: string) => {
-    setExpandedPrefixes(prev => {
-      const next = new Set(prev)
-      if (next.has(prefix)) {
-        next.delete(prefix)
-      } else {
-        next.add(prefix)
-        // lazy load children
-        if (selectedBucket && !prefixChildren[prefix]) {
-          loadPrefixChildren(selectedBucket, prefix)
-        }
-      }
-      return next
-    })
-  }
-
-  const navigateToPrefix = (prefix: string) => {
-    if (!selectedBucket) return
-    navigateTo(prefix)
-    // ensure expanded
-    if (prefix) {
-      setExpandedPrefixes(prev => {
-        const next = new Set(prev)
-        // expand all ancestors
-        let p = ''
-        prefix.split('/').filter(Boolean).forEach(part => {
-          p += part + '/'
-          next.add(p)
-        })
-        return next
-      })
-    }
-  }
-
-  // Recursive tree renderer for folders in sidebar
-  const renderPrefixTree = (parentPrefix: string, depth: number): React.ReactNode => {
-    const children = prefixChildren[parentPrefix] || []
-    return children.map((childPrefix) => {
-      const isExpanded = expandedPrefixes.has(childPrefix)
-      const folderName = childPrefix.replace(parentPrefix, '').replace(/\/$/, '')
-      const isActive = currentPrefix === childPrefix
-      return (
-        <div key={childPrefix} style={{ marginLeft: `${depth * 12}px` }}>
-          <div
-            className={`flex items-center gap-1.5 px-2 py-1 text-sm rounded cursor-pointer hover:bg-beige-100 ${isActive ? 'bg-beige-200 font-medium' : 'text-warm-800'}`}
-            onClick={() => navigateToPrefix(childPrefix)}
-          >
-            <span
-              onClick={(e) => { e.stopPropagation(); togglePrefix(childPrefix); }}
-              className="inline-block w-3 text-center cursor-pointer select-none"
-            >
-              {isExpanded ? '▼' : '▶'}
-            </span>
-            <Folder size={14} className="shrink-0 text-beige-600" />
-            <span className="truncate">{folderName}</span>
-          </div>
-          {isExpanded && renderPrefixTree(childPrefix, depth + 1)}
-        </div>
-      )
-    })
   }
 
   const toggleSelect = (fullPath: string) => {
@@ -1308,7 +1250,6 @@ function App() {
       )
       toast.success(`Created folder "${name}"`)
       loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
-      loadPrefixChildren(selectedBucket, currentPrefix)
     } catch (err: any) {
       toast.error('Failed to create folder: ' + (err.message || ''))
     }
@@ -1597,53 +1538,150 @@ function App() {
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
       <header className="border-b border-beige-200 bg-white/80 backdrop-blur sticky top-0 z-50">
-        <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4">
-          {/* Left: logo + searchbar */}
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="lg:hidden btn-ghost p-1 -ml-1"
-                aria-label="Toggle sidebar"
-              >
-                <Menu size={20} />
-              </button>
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-beige-300 flex items-center justify-center">
-                  <Folder size={18} className="text-beige-700" />
-                </div>
-                <div className="hidden sm:block">
-                  <div className="font-semibold tracking-tight text-sm sm:text-base">Family Storage</div>
-                  <div className="text-[9px] sm:text-[10px] text-beige-600 -mt-0.5">MinIO • Local</div>
-                </div>
+        <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4 overflow-hidden">
+          {/* Current location (on the left) */}
+          {selectedBucket && (
+            <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap text-xs sm:text-sm py-1">
+              <div className="flex items-center gap-1">
+                <button onClick={goHome} className="flex items-center gap-1 hover:text-beige-700 text-warm-900">
+                  <Home size={14} /> <span className="truncate max-w-[6rem] sm:max-w-none">{selectedBucket}</span>
+                </button>
+                {breadcrumbs.map((crumb, idx) => (
+                  <span key={idx} className="flex items-center gap-0.5 text-beige-500 shrink-0">
+                    <ChevronRight size={12} />
+                    <button onClick={() => navigateTo(crumb.prefix)} className="hover:text-beige-700 text-warm-800 truncate max-w-[5rem] sm:max-w-[8rem]">
+                      {crumb.label}
+                    </button>
+                  </span>
+                ))}
               </div>
             </div>
+          )}
 
-            {selectedBucket && (
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search..."
-                className="input flex-1 min-w-[6rem] sm:min-w-[10rem] lg:min-w-[12rem] text-sm py-1 sm:py-1.5"
-              />
+          {/* Action buttons + right controls (compact, scrollable on narrow screens) */}
+          <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto whitespace-nowrap shrink-0">
+            {isInSelectMode && (
+              <div className="flex items-center gap-1 text-xs sm:text-sm">
+                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
+                  {selectedItems.size}
+                </span>
+                <button
+                  onClick={downloadSelectedItems}
+                  className="btn btn-primary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2"
+                >
+                  Download
+                </button>
+                <button
+                  onClick={restoreSelectedItems}
+                  className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-green-600 hover:bg-green-50"
+                >
+                  Restore
+                </button>
+                <button
+                  onClick={deleteSelectedItems}
+                  className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-red-600 hover:bg-red-50"
+                >
+                  Delete
+                </button>
+                <button onClick={clearSelection} className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2">
+                  Clear
+                </button>
+              </div>
             )}
-          </div>
 
-          {/* Right: dropdown + endpoint + disconnect */}
-          <div className="flex items-center gap-2 text-sm shrink-0">
-            {selectedBucket && (
-              <select
-                value={searchType}
-                onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
-                className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 w-16 sm:w-20"
+            <button
+              onClick={() => setShowDeleted(!showDeleted)}
+              className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
+              title={showDeleted ? 'Hide deleted photos' : 'Show deleted photos (including delete markers)'}
+            >
+              {showDeleted ? <EyeOff size={13} /> : <Eye size={13} />}
+              <span className="hidden sm:inline">{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
+            </button>
+
+            <button
+              onClick={() => setShowNotes(!showNotes)}
+              className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
+              title={showNotes ? 'Hide notes' : 'Show notes (tooltips on hover when off)'}
+            >
+              <MessageSquare size={13} />
+              <span className="hidden sm:inline">{showNotes ? 'Hide notes' : 'Show notes'}</span>
+            </button>
+
+            {/* View toggle: grid / list */}
+            <div className="flex items-center border border-beige-200 rounded-lg overflow-hidden text-xs">
+              <button
+                onClick={() => setViewMode('grid')}
+                className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'grid' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
+                title="Grid view"
               >
-                <option value="name">Name</option>
-                <option value="note">Note</option>
-              </select>
+                <LayoutGrid size={13} />
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'list' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
+                title="List view"
+              >
+                <List size={13} />
+              </button>
+            </div>
+
+            {selectedBucket && buckets.includes('shared') && (
+              <button
+                onClick={() => {
+                  const target = selectedBucket === 'shared'
+                    ? (buckets.find(b => b !== 'shared') || buckets[0])
+                    : 'shared'
+                  if (target && target !== selectedBucket) {
+                    selectBucket(target)
+                  }
+                }}
+                className={`btn ${selectedBucket === 'shared' ? 'btn-primary' : 'btn-secondary'} text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2 flex items-center gap-1`}
+                title={selectedBucket === 'shared' ? 'Switch to your personal drive' : 'Access the shared drive'}
+              >
+                {selectedBucket === 'shared' ? <Home size={14} /> : <Folder size={14} />}
+                <span className="hidden sm:inline">{selectedBucket === 'shared' ? 'My Drive' : 'Shared'}</span>
+              </button>
             )}
 
-            <div className="hidden md:block px-2 py-0.5 sm:px-3 sm:py-1 rounded-full bg-beige-100 text-beige-700 text-[10px] sm:text-xs font-medium">
+            {selectedBucket && (
+              <button onClick={createFolder} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+                <FolderPlus size={14} /> <span className="hidden sm:inline">Create folder</span>
+              </button>
+            )}
+
+            <label className="btn btn-primary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+              <UploadIcon size={14} />
+              <span className="hidden sm:inline">Upload files</span>
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) uploadFiles(e.target.files)
+                  e.target.value = ''
+                }}
+              />
+            </label>
+
+            <label className="btn btn-secondary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+              <UploadIcon size={14} />
+              <span className="hidden sm:inline">Upload folder</span>
+              <input
+                type="file"
+                // @ts-ignore - webkit specific
+                webkitdirectory=""
+                directory=""
+                multiple
+                className="hidden"
+                onChange={handleFolderUpload}
+              />
+            </label>
+
+            <button onClick={refresh} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
+              <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
+            </button>
+
+            <div className="hidden md:block px-2 py-0.5 sm:px-3 sm:py-1 rounded-full bg-beige-100 text-beige-700 text-[10px] sm:text-xs font-medium ml-1">
               {creds?.endpoint}
             </div>
             <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-2 sm:px-3.5 gap-2" title="Disconnect">
@@ -1654,191 +1692,9 @@ function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 w-full">
-          {/* Mobile backdrop */}
-          {sidebarOpen && (
-            <div 
-              className="fixed inset-0 bg-black/30 z-50 lg:hidden" 
-              onClick={() => setSidebarOpen(false)} 
-            />
-          )}
-
-          {/* Sidebar (drawer on mobile, always visible on lg+) */}
-          <div 
-            className={`fixed lg:static inset-y-0 left-0 z-[60] w-64 lg:w-48 border-r border-beige-200 bg-white p-3 sm:p-4 flex flex-col transform transition-transform duration-200 ease-in-out lg:transform-none lg:translate-x-0 overflow-y-auto ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
-          >
-          <div className="flex items-center justify-between px-1 mb-3">
-            <div className="uppercase text-xs tracking-[1px] font-semibold text-beige-600">Buckets</div>
-            <div className="flex items-center">
-              <button onClick={refresh} className="btn-ghost p-1.5 rounded-md" title="Refresh">
-                <RefreshCw size={15} />
-              </button>
-              <button onClick={() => setSidebarOpen(false)} className="lg:hidden btn-ghost p-1.5" title="Close">
-                <X size={15} />
-              </button>
-            </div>
-          </div>
-
-          {buckets.length === 0 && (
-            <div className="text-sm text-beige-700 px-1">No buckets found</div>
-          )}
-
-          <div className="space-y-1">
-            {buckets.map((b) => (
-              <React.Fragment key={b}>
-                <button
-                  onClick={() => selectBucket(b)}
-                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${selectedBucket === b
-                    ? 'bg-beige-200 text-warm-900 font-medium'
-                    : 'hover:bg-beige-100 text-warm-800'
-                    }`}
-                >
-                  <Folder size={16} className="shrink-0" />
-                  <span className="truncate">{b}</span>
-                </button>
-
-                {/* Show folder hierarchy for the selected bucket (bucket name acts as root) */}
-                {selectedBucket === b && (
-                  <div className="ml-4 mt-1 mb-2 space-y-0.5 text-sm">
-                    {renderPrefixTree('', 0)}
-                  </div>
-                )}
-              </React.Fragment>
-            ))}
-          </div>
-
-          <div className="mt-auto pt-6 text-[11px] text-beige-600 px-1">
-            Preview images are generated and cached by the Go backend.
-          </div>
-        </div>
-
+      <div className="flex flex-1 w-full overflow-hidden">
         {/* Main */}
-        <div className="flex-1 flex flex-col min-w-0">
-          <div className="min-h-14 border-b border-beige-200 bg-white flex items-center px-2 sm:px-4 lg:px-6 gap-2 overflow-x-auto">
-            <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap text-xs sm:text-sm py-1">
-              {selectedBucket && (
-                <div className="flex items-center gap-1">
-                  <button onClick={goHome} className="flex items-center gap-1 hover:text-beige-700 text-warm-900">
-                    <Home size={14} /> <span className="truncate max-w-[6rem] sm:max-w-none">{selectedBucket}</span>
-                  </button>
-                  {breadcrumbs.map((crumb, idx) => (
-                    <span key={idx} className="flex items-center gap-0.5 text-beige-500 shrink-0">
-                      <ChevronRight size={12} />
-                      <button onClick={() => navigateTo(crumb.prefix)} className="hover:text-beige-700 text-warm-800 truncate max-w-[5rem] sm:max-w-[8rem]">
-                        {crumb.label}
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto whitespace-nowrap">
-              {isInSelectMode && (
-                <div className="flex items-center gap-1 text-xs sm:text-sm">
-                  <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-medium">
-                    {selectedItems.size}
-                  </span>
-                  <button
-                    onClick={downloadSelectedItems}
-                    className="btn btn-primary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2"
-                  >
-                    Download
-                  </button>
-                  <button
-                    onClick={restoreSelectedItems}
-                    className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-green-600 hover:bg-green-50"
-                  >
-                    Restore
-                  </button>
-                  <button
-                    onClick={deleteSelectedItems}
-                    className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 text-red-600 hover:bg-red-50"
-                  >
-                    Delete
-                  </button>
-                  <button onClick={clearSelection} className="btn btn-secondary text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2">
-                    Clear
-                  </button>
-                </div>
-              )}
-
-              <button
-                onClick={() => setShowDeleted(!showDeleted)}
-                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
-                title={showDeleted ? 'Hide deleted photos' : 'Show deleted photos (including delete markers)'}
-              >
-                {showDeleted ? <EyeOff size={13} /> : <Eye size={13} />}
-                <span className="hidden sm:inline">{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
-              </button>
-
-              <button
-                onClick={() => setShowNotes(!showNotes)}
-                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-[10px] py-0.5 px-1.5 sm:text-xs sm:py-1 sm:px-2 flex items-center gap-1`}
-                title={showNotes ? 'Hide notes' : 'Show notes (tooltips on hover when off)'}
-              >
-                <MessageSquare size={13} />
-                <span className="hidden sm:inline">{showNotes ? 'Hide notes' : 'Show notes'}</span>
-              </button>
-
-              {/* View toggle: grid / list (minimal) */}
-              <div className="flex items-center border border-beige-200 rounded-lg overflow-hidden text-xs">
-                <button
-                  onClick={() => setViewMode('grid')}
-                  className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'grid' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
-                  title="Grid view"
-                >
-                  <LayoutGrid size={13} />
-                </button>
-                <button
-                  onClick={() => setViewMode('list')}
-                  className={`px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center ${viewMode === 'list' ? 'bg-beige-200 text-warm-900' : 'hover:bg-beige-100 text-beige-700'}`}
-                  title="List view"
-                >
-                  <List size={13} />
-                </button>
-              </div>
-
-              {selectedBucket && (
-                <button onClick={createFolder} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-                  <FolderPlus size={14} /> <span className="hidden sm:inline">Create folder</span>
-                </button>
-              )}
-
-              <label className="btn btn-primary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-                <UploadIcon size={14} />
-                <span className="hidden sm:inline">Upload files</span>
-                <input
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    if (e.target.files) uploadFiles(e.target.files)
-                    e.target.value = ''
-                  }}
-                />
-              </label>
-
-              <label className="btn btn-secondary cursor-pointer text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-                <UploadIcon size={14} />
-                <span className="hidden sm:inline">Upload folder</span>
-                <input
-                  type="file"
-                  // @ts-ignore - webkit specific
-                  webkitdirectory=""
-                  directory=""
-                  multiple
-                  className="hidden"
-                  onChange={handleFolderUpload}
-                />
-              </label>
-
-              <button onClick={refresh} className="btn btn-secondary text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2">
-                <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
-              </button>
-            </div>
-          </div>
-
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           <div
             ref={contentRef}
             className={`flex-1 p-3 sm:p-6 overflow-auto relative ${isDragSelecting ? 'select-none' : ''}`}
@@ -1858,10 +1714,6 @@ function App() {
               </div>
             ) : (
               <>
-                <div className="mb-4 sm:mb-5 border border-dashed border-beige-300 rounded-2xl bg-white/60 py-2 sm:py-3 text-center text-xs sm:text-sm text-beige-700">
-                  Drop files here to upload to <span className="font-medium text-warm-900">{currentPrefix || '/'}</span>
-                </div>
-
                 {currentUpload && (
                   <div className="mb-5 card p-4">
                     <div className="text-xs uppercase tracking-widest mb-1 text-beige-600 font-semibold">Uploading</div>
@@ -1876,6 +1728,103 @@ function App() {
                       />
                     </div>
                     <div className="text-sm truncate font-medium mt-1">{currentUpload.name}</div>
+                  </div>
+                )}
+
+                {/* Content toolbar: search + type (left) + per-page + showing/pagination (right) */}
+                {!loading && (
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm text-beige-700">
+                    {/* Left: search bar + search type dropdown (grows but capped) */}
+                    <div className="flex flex-1 items-center gap-2 min-w-[180px] max-w-md">
+                      <input
+                        type="text"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search..."
+                        className="input flex-1 min-w-[100px] text-sm py-1 sm:py-1.5"
+                      />
+                      <select
+                        value={searchType}
+                        onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
+                        className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 w-16 sm:w-20"
+                      >
+                        <option value="name">Name</option>
+                        <option value="note">Note</option>
+                      </select>
+                    </div>
+
+                    {/* Controls: per-page + page nav */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <select
+                        value={pageSize}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          const newSize = v === 'all' ? 'all' : (parseInt(v, 10) as 100 | 200 | 400)
+                          setPageSize(newSize)
+                          setCurrentPage(1)
+                        }}
+                        className="input text-xs py-0.5 px-1.5 sm:text-sm sm:py-1 sm:px-2 tabular-nums"
+                        title="Items per page"
+                      >
+                        <option value={100}>100</option>
+                        <option value={200}>200</option>
+                        <option value={400}>400</option>
+                        <option value="all">All</option>
+                      </select>
+
+                      {totalPages > 1 && (
+                        <div className="flex items-center gap-1">
+                          <span className="tabular-nums text-beige-600 whitespace-nowrap">
+                            Page {currentPage} / {totalPages}
+                          </span>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setCurrentPage(1)}
+                              disabled={currentPage === 1}
+                              className="btn btn-secondary text-xs py-0.5 px-1.5 disabled:opacity-50"
+                            >
+                              First
+                            </button>
+                            <button
+                              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                              disabled={currentPage === 1}
+                              className="btn btn-secondary text-xs py-0.5 px-1.5 flex items-center gap-1 disabled:opacity-50"
+                            >
+                              <ChevronLeft size={13} /> Prev
+                            </button>
+                            <button
+                              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                              disabled={currentPage === totalPages}
+                              className="btn btn-secondary text-xs py-0.5 px-1.5 flex items-center gap-1 disabled:opacity-50"
+                            >
+                              Next <ChevronRight size={13} />
+                            </button>
+                            <button
+                              onClick={() => setCurrentPage(totalPages)}
+                              disabled={currentPage === totalPages}
+                              className="btn btn-secondary text-xs py-0.5 px-1.5 disabled:opacity-50"
+                            >
+                              Last
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Showing text pushed to the far right */}
+                    {filteredItems.length > 0 && (
+                      <span className="ml-auto tabular-nums text-beige-600 whitespace-nowrap">
+                        {pageSize === 'all'
+                          ? `Showing all ${filteredItems.length}`
+                          : (() => {
+                              const ps = pageSize
+                              const start = Math.min((currentPage - 1) * ps + 1, filteredItems.length)
+                              const end = Math.min(currentPage * ps, filteredItems.length)
+                              return `Showing ${start}–${end} of ${filteredItems.length}`
+                            })()}
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -1899,7 +1848,7 @@ function App() {
                   </div>
                 ) : viewMode === 'grid' ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 sm:gap-4 items-start">
-                    {filteredItems.map((item, index) => (
+                    {visibleItems.map((item, index) => (
                       <div 
                         key={index} 
                         className={`file-item card flex flex-col group relative overflow-visible ${item.isDeleted ? 'opacity-60' : ''}`} 
@@ -2059,7 +2008,7 @@ function App() {
                 ) : (
                   /* Minimal list view - no image previews at all */
                   <div className="divide-y divide-beige-200 border border-beige-200 rounded-xl bg-white overflow-hidden">
-                    {filteredItems.map((item, index) => {
+                    {visibleItems.map((item, index) => {
                       const isSelected = selectedItems.has(item.fullPath)
                       return (
                         <div
@@ -2436,10 +2385,6 @@ function App() {
           {tooltip.text}
         </div>
       )}
-
-      <div className="text-center py-3 text-[11px] text-beige-600 border-t border-beige-200 bg-white">
-        Images are previewed via cached Go backend. Full resolution uses presigned MinIO URLs.
-      </div>
     </div>
   )
 }
