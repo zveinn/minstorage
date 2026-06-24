@@ -1,6 +1,6 @@
 # Minstorage
 
-## How to get a free trial for minio
+## How to get minio enterprise for free
 - go to the min.io website
 - press "download"
 - request a free license key
