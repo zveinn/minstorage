@@ -1,4 +1,4 @@
-module family-storage/backend
+module minstorage/backend
 
 go 1.25.0
 
