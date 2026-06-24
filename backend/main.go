@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"context"
@@ -176,11 +178,6 @@ func main() {
 			w.Write([]byte("ok"))
 		})
 		r.Get("/preview", previewHandler)
-		r.Get("/minio", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			addr := resolveMinioAddress()
-			_ = json.NewEncoder(w).Encode(map[string]string{"endpoint": addr})
-		})
 	})
 
 	// Serve the embedded React frontend (SPA)
@@ -195,6 +192,20 @@ func main() {
 
 	addr := resolveListenAddress()
 	effectiveMinio := resolveMinioAddress()
+
+	// Wrap the app router with the transparent S3 proxy. When --minio is set,
+	// browser S3 calls (signed with this backend as the endpoint) are forwarded
+	// to MinIO with their signature intact, so the UI never talks to MinIO
+	// directly and MinIO needs no CORS config of its own.
+	var rootHandler http.Handler = r
+	if effectiveMinio != "" {
+		proxy := newS3Proxy(effectiveMinio, resolveMinioTLS())
+		rootHandler = s3ProxyRouter(proxy, r)
+		log.Printf("[s3proxy] transparent S3 proxy enabled -> %s (tls=%v)", effectiveMinio, resolveMinioTLS())
+	} else {
+		log.Printf("[s3proxy] disabled: no --minio address set; the browser must reach MinIO directly")
+	}
+
 	if effectiveMinio == "" {
 		effectiveMinio = "(per-request from client)"
 	}
@@ -255,7 +266,7 @@ func main() {
 
 		server := &http.Server{
 			Addr:      httpsAddr,
-			Handler:   r,
+			Handler:   rootHandler,
 			TLSConfig: certManager.TLSConfig(),
 		}
 		// ListenAndServeTLS with empty strings uses the TLSConfig from autocert (loads or obtains cert)
@@ -267,7 +278,7 @@ func main() {
 
 	// Plain HTTP mode (no --cert)
 	log.Printf("Family Storage listening on %s (preview cache: %s, minio: %s, signup: %s, backend-creds: %s)", addr, cacheDir, effectiveMinio, effectiveSignup, backendCreds)
-	if err := http.ListenAndServe(addr, r); err != nil {
+	if err := http.ListenAndServe(addr, rootHandler); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -276,6 +287,7 @@ var listenAddress string
 var minioAddress string
 var minioUser string
 var minioPass string
+var minioTLS bool
 var signupHostPort string
 var certDomain string
 
@@ -291,6 +303,8 @@ func init() {
 
 	flag.StringVar(&minioPass, "pass", "", "MinIO secret key for backend operations")
 	flag.StringVar(&minioPass, "p", "", "Shorthand for --pass")
+
+	flag.BoolVar(&minioTLS, "minio-tls", false, "Connect to MinIO over HTTPS/TLS (transparent S3 proxy and previews). Overridden by an explicit scheme on --minio (e.g. https://host). Use --minio-tls=true (the bare form '--minio-tls true' won't work). Also MINIO_TLS=true.")
 
 	flag.StringVar(&signupHostPort, "signupHostPort", "", "Host:port to use in generated signup URLs (e.g. 192.168.1.35:8080). Falls back to --minio address if unset.")
 
@@ -330,14 +344,43 @@ func normalizeAddress(addr string) string {
 }
 
 func resolveMinioAddress() string {
+	return normalizeMinioAddress(rawMinioAddress())
+}
+
+func resolveMinioTLS() bool {
+	// An explicit scheme on the --minio address wins — it's the least
+	// surprising signal (e.g. --minio https://… enables TLS, http:// disables
+	// it) and sidesteps the `flag` package's boolean gotcha where
+	// `--minio-tls false` actually sets the flag to true.
+	raw := rawMinioAddress()
+	switch {
+	case strings.HasPrefix(strings.ToLower(raw), "https://"):
+		return true
+	case strings.HasPrefix(strings.ToLower(raw), "http://"):
+		return false
+	}
+
+	if minioTLS {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MINIO_TLS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// rawMinioAddress returns the MinIO address as configured, before scheme
+// stripping/normalization, so callers can inspect an explicit http(s):// prefix.
+func rawMinioAddress() string {
 	if minioAddress != "" {
-		return normalizeMinioAddress(minioAddress)
+		return minioAddress
 	}
 	if addr := os.Getenv("MINIO"); addr != "" {
-		return normalizeMinioAddress(addr)
+		return addr
 	}
 	if addr := os.Getenv("MINIO_ADDRESS"); addr != "" {
-		return normalizeMinioAddress(addr)
+		return addr
 	}
 	return ""
 }
@@ -404,6 +447,131 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// newS3Proxy builds a transparent reverse proxy to MinIO.
+//
+// The browser talks to this backend with the AWS S3 SDK, signing each request
+// (SigV4) using THIS backend's host as the endpoint. SigV4 covers the Host
+// header and the request path/query, but NOT the URL scheme. So as long as we
+// forward the request to MinIO without touching the signed parts — crucially,
+// leaving the Host header intact — MinIO recomputes an identical signature
+// using the caller's secret key and the request validates. That means we can
+// proxy each user's own credentials straight through without re-signing, and
+// the backend never needs to know any secret key.
+func newS3Proxy(minioAddr string, useTLS bool) *httputil.ReverseProxy {
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	target := &url.URL{Scheme: scheme, Host: minioAddr}
+
+	return &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			// Only redirect where the bytes are dialed; do NOT modify req.Host.
+			// req.Host stays as the inbound (signed) host so MinIO's signature
+			// check matches. The X-Forwarded-For header ReverseProxy adds is
+			// unsigned and ignored by signature verification.
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("[s3proxy] error proxying %s %s: %v", r.Method, r.URL.Path, err)
+			http.Error(w, "s3 proxy error: "+err.Error(), http.StatusBadGateway)
+		},
+	}
+}
+
+// isS3Request reports whether a request is an AWS-signed S3 call (either a
+// SigV4 Authorization header, or a presigned URL carrying X-Amz-* query
+// params). The app's own routes (/health, /preview, /signup, static
+// assets, SPA) never carry these, so this cleanly separates S3 traffic from
+// app traffic on the same origin/port.
+func isS3Request(r *http.Request) bool {
+	if strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256") {
+		return true
+	}
+	q := r.URL.Query()
+	return q.Get("X-Amz-Signature") != "" || q.Get("X-Amz-Algorithm") != ""
+}
+
+// isS3Preflight reports whether a request is a CORS preflight (OPTIONS) for a
+// cross-origin S3 call. Preflights don't carry the Authorization header, so
+// isS3Request can't see them.
+func isS3Preflight(r *http.Request) bool {
+	return r.Method == http.MethodOptions &&
+		r.Header.Get("Origin") != "" &&
+		r.Header.Get("Access-Control-Request-Method") != ""
+}
+
+// originMatchesHost reports whether the request Origin's host:port matches the
+// host this backend was reached on (the Host header). This restricts the proxy
+// to the address the backend is actually being served on — which works even
+// when listening on 0.0.0.0, because whatever concrete IP the browser used to
+// load the app is the same value in both the Origin and the Host header.
+func originMatchesHost(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, host)
+}
+
+// applyProxyCORS enforces the origin restriction for cross-origin S3 requests
+// and answers preflights. Returns true if the caller should continue to the
+// proxy, false if the request was fully handled (preflight) or rejected.
+func applyProxyCORS(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	preflight := isS3Preflight(r)
+
+	// Same-origin (browser omits Origin) or non-browser client: nothing to
+	// negotiate. Note the AWS SDK pointed at our own origin never sends Origin.
+	if origin == "" {
+		if preflight {
+			w.WriteHeader(http.StatusNoContent)
+			return false
+		}
+		return true
+	}
+
+	// Cross-origin: only allow origins served by this backend.
+	if !originMatchesHost(origin, r.Host) {
+		log.Printf("[s3proxy] rejected cross-origin request from %q (host=%q)", origin, r.Host)
+		http.Error(w, "cross-origin request not allowed", http.StatusForbidden)
+		return false
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Add("Vary", "Origin")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
+	reqHeaders := r.Header.Get("Access-Control-Request-Headers")
+	if reqHeaders == "" {
+		reqHeaders = "Authorization, Content-Type, Content-MD5, x-amz-content-sha256, x-amz-date, x-amz-user-agent, x-amz-acl, x-amz-meta-*"
+	}
+	w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+	w.Header().Set("Access-Control-Expose-Headers", "ETag, x-amz-version-id, x-amz-request-id, x-amz-id-2")
+	w.Header().Set("Access-Control-Max-Age", "600")
+
+	if preflight {
+		w.WriteHeader(http.StatusNoContent)
+		return false
+	}
+	return true
+}
+
+// s3ProxyRouter wraps the app router so that S3 traffic is transparently
+// forwarded to MinIO and everything else is served normally.
+func s3ProxyRouter(proxy *httputil.ReverseProxy, app http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if proxy != nil && (isS3Request(r) || isS3Preflight(r)) {
+			if !applyProxyCORS(w, r) {
+				return
+			}
+			proxy.ServeHTTP(w, r)
+			return
+		}
+		app.ServeHTTP(w, r)
+	})
+}
+
 // previewHandler generates and serves image previews
 func previewHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -440,14 +608,20 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 	accessKey, secretKey := resolveMinioCredentials()
 	usingBackendCreds := accessKey != "" && secretKey != ""
 
-	if !usingBackendCreds && !usingBackendMinio {
-		// Legacy fallback only when no backend MinIO config at all
+	if !usingBackendCreds {
+		// Fall back to the per-user credentials the browser sends. This keeps
+		// previews working in transparent-proxy mode when the backend has a
+		// --minio address but no --user/--pass of its own.
 		accessKey = getHeader(r, "X-Minio-Access-Key", "")
 		secretKey = getHeader(r, "X-Minio-Secret-Key", "")
-		usingBackendCreds = false
 	}
 
-	useSSL := strings.ToLower(getHeader(r, "X-Minio-Use-SSL", "false")) == "true"
+	// Prefer the backend's TLS setting when talking to a configured MinIO;
+	// otherwise honour the per-request header (legacy direct-client mode).
+	useSSL := resolveMinioTLS()
+	if !usingBackendMinio {
+		useSSL = strings.ToLower(getHeader(r, "X-Minio-Use-SSL", "false")) == "true"
+	}
 
 	log.Printf("[preview] request: bucket=%q object=%q width=%d endpoint=%q useSSL=%v usingBackendMinio=%v usingBackendCreds=%v",
 		bucket, object, width, minioEndpoint, useSSL, usingBackendMinio, usingBackendCreds)

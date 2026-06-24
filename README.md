@@ -6,7 +6,13 @@
 - request a free license key
 
 A simple, modern file browser for MinIO. One Go binary serves the React web app
-and talks to your MinIO server.
+and acts as a transparent S3 proxy to your MinIO server.
+
+The browser never talks to MinIO directly. It speaks the S3 protocol to this Go
+backend, which forwards every request to MinIO with the user's own signature
+left intact (no re-signing). Because the browser only ever connects to the
+backend's own origin, **MinIO needs no CORS configuration** and does not have to
+be reachable from clients at all — only the backend needs to reach it.
 
 ## What you need
 
@@ -31,47 +37,38 @@ can serve it.
 
 ```bash
 cd ../backend
-go run main.go
+go run main.go --minio http://127.0.0.1:9000
 
 # full example
-# NOTE: the UI will try to access minio from the address given in --minio
-./backend --address EXTERNAL_IP:7002 --minio http://EXTERNAL_IP:7000 --user minioadmin --pass minioadmin
+./backend --address 0.0.0.0:7002 --minio http://127.0.0.1:9000 --user minioadmin --pass minioadmin
 ```
 
-The server now listens on `http://localhost:8080`.
+`--minio` is the address the backend uses to reach MinIO. Its scheme controls
+how the backend connects:
 
-To use a different address:
+- `http://…`  → plain HTTP (default if no scheme is given)
+- `https://…` → TLS
+
+The backend then proxies the browser's S3 traffic to that address, so the
+browser only ever connects back to the backend itself.
+
+The server listens on `:8080` by default. To use a different address:
 
 ```bash
-go run main.go --address 0.0.0.0:8080
-go run main.go -a :9000
+go run main.go --address 0.0.0.0:8080 --minio http://127.0.0.1:9000
+go run main.go -a :9000 -m http://127.0.0.1:9001
 ```
 
-### 3. Allow the app in MinIO (CORS)
+> **MinIO CORS is not required.** Since the browser talks only to this backend,
+> you do **not** need to configure `cors_allow_origin` on MinIO.
 
-The web app talks to MinIO directly from the browser, so MinIO must allow the
-address where the app runs.
+### 3. Log in
 
-```bash
-mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
-mc admin config set local api cors_allow_origin 'http://localhost:8080'
-mc admin service restart local
-```
+Open the server address in your browser (e.g. `http://localhost:8080`) and fill
+in your MinIO credentials:
 
-For local testing you can allow everything instead:
-
-```bash
-mc admin config set local api cors_allow_origin '*'
-mc admin service restart local
-```
-
-### 4. Log in
-
-Open `http://localhost:8080` in your browser and fill in:
-
-- **MinIO Endpoint**: your MinIO address, for example `http://127.0.0.1:9000`
-- **Access Key** and **Secret Key**: your MinIO credentials
-- **Preview Service**: leave blank
+- **User**: your MinIO access key
+- **Password**: your MinIO secret key (use the eye icon to reveal it)
 
 Then click **Connect to MinIO**.
 
@@ -86,17 +83,23 @@ Then click **Connect to MinIO**.
 
 ## Command line options
 
-| Flag                | Short | Description                                       |
-| ------------------- | ----- | ------------------------------------------------- |
-| `--address`         | `-a`  | Address to listen on (default `:8080`)            |
-| `--minio`           | `-m`  | MinIO address the backend uses                    |
-| `--user`            | `-u`  | MinIO access key for the backend                  |
-| `--pass`            | `-p`  | MinIO secret key for the backend                  |
-| `--cert`            | `-c`  | Domain for automatic HTTPS (Let's Encrypt)        |
-| `--signupHostPort`  |       | Host:port used in generated signup links          |
+| Flag                | Short | Description                                                  |
+| ------------------- | ----- | ------------------------------------------------------------ |
+| `--address`         | `-a`  | Address to listen on (default `:8080`)                       |
+| `--minio`           | `-m`  | MinIO address the backend proxies to (scheme sets TLS)       |
+| `--minio-tls`       |       | Force TLS to MinIO when `--minio` has no scheme (`=true`)    |
+| `--user`            | `-u`  | MinIO access key for backend operations (e.g. previews)      |
+| `--pass`            | `-p`  | MinIO secret key for backend operations                      |
+| `--cert`            | `-c`  | Domain for automatic HTTPS (Let's Encrypt)                   |
+| `--signupHostPort`  |       | Host:port used in generated signup links                     |
+
+Whether the backend connects to MinIO over TLS is taken from the `--minio`
+scheme (`https://` → on, `http://` → off). Only when no scheme is given does
+`--minio-tls` apply — and it must be written as `--minio-tls=true` (the bare
+`--minio-tls true` form is ignored by Go's flag parser).
 
 You can also use environment variables: `ADDRESS`, `PORT`, `MINIO`, `MINIO_USER`,
-`MINIO_PASS`, and `PREVIEW_CACHE_DIR`.
+`MINIO_PASS`, `MINIO_TLS`, and `PREVIEW_CACHE_DIR`.
 
 ## Automatic HTTPS (optional)
 
@@ -137,7 +140,8 @@ valid for 24 hours and works only once.
 ## Tips
 
 - Image previews are cached in `./previews` (change with `PREVIEW_CACHE_DIR`).
-- Your MinIO login is kept only in the browser and is gone on refresh.
+- Your MinIO login is kept only in the browser session and is gone on refresh.
 - For frontend development, run `npm run dev` in `frontend/` against a running
   backend.
-- If you get connection errors, check the MinIO endpoint and MinIO CORS settings.
+- If you get connection errors, check the `--minio` address (and its scheme) and
+  that the backend can reach MinIO. The browser only needs to reach the backend.
