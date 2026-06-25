@@ -182,13 +182,22 @@ async function listBuckets(client: S3Client): Promise<string[]> {
   return (response.Buckets || []).map((b) => b.Name!).filter(Boolean).sort()
 }
 
-// Strictly-increasing UnixNano-style stamp. Browsers only expose millisecond
-// epoch time, so we scale ms -> ns and bump by 1ns whenever multiple files are
-// stamped within the same millisecond. This keeps every key unique (no
-// overwrites) while remaining a monotonic, lexically-sortable numeric value.
+// Strictly-increasing UnixNano stamp. There is no true epoch-nanosecond clock
+// in the browser, so we use the highest-resolution one available:
+// performance.timeOrigin + performance.now() is a sub-millisecond (often
+// microsecond-grade) epoch time. We convert that to nanoseconds and, when two
+// files still land on the same value, bump by 1ns — keeping every key unique
+// (no overwrites) and monotonic / lexically sortable by upload time.
 let lastUploadStamp = 0n
+function nowEpochNanos(): bigint {
+  const hiresMs =
+    typeof performance !== 'undefined' && typeof performance.timeOrigin === 'number'
+      ? performance.timeOrigin + performance.now() // sub-ms resolution where the browser allows
+      : Date.now() // ms-only fallback
+  return BigInt(Math.round(hiresMs * 1e6)) // ms -> ns
+}
 function nextUploadStamp(): bigint {
-  let ts = BigInt(Date.now()) * 1_000_000n
+  let ts = nowEpochNanos()
   if (ts <= lastUploadStamp) ts = lastUploadStamp + 1n
   lastUploadStamp = ts
   return ts
