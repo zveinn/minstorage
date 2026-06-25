@@ -301,7 +301,6 @@ function App() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [pageSize, setPageSize] = useState<100 | 200 | 400 | 'all'>(100)
   const [currentPage, setCurrentPage] = useState(1)
-  const [sortMode, setSortMode] = useState<'name' | 'date'>('name')
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
@@ -411,7 +410,6 @@ function App() {
           let targetViewMode: 'grid' | 'list' = 'grid'
           let targetPageSize: 100 | 200 | 400 | 'all' = 100
           let targetCurrentPage = 1
-          let targetSortMode: 'name' | 'date' = 'name'
           try {
             const saved = sessionStorage.getItem(STORAGE_STATE_KEY)
             if (saved) {
@@ -437,9 +435,6 @@ function App() {
               if (typeof parsedState.currentPage === 'number' && parsedState.currentPage > 0) {
                 targetCurrentPage = parsedState.currentPage
               }
-              if (parsedState.sortMode === 'name' || parsedState.sortMode === 'date') {
-                targetSortMode = parsedState.sortMode
-              }
             }
           } catch {}
 
@@ -459,9 +454,6 @@ function App() {
             }
             if (targetPageSize !== pageSize) {
               setPageSize(targetPageSize)
-            }
-            if (targetSortMode !== sortMode) {
-              setSortMode(targetSortMode)
             }
             setSelectedBucket(bucketToUse)
             setCurrentPrefix(prefixToUse)
@@ -502,11 +494,10 @@ function App() {
         viewMode,
         pageSize,
         currentPage,
-        sortMode,
       }
       sessionStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state))
     }
-  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, pageSize, currentPage, sortMode, isLoggedIn])
+  }, [selectedBucket, currentPrefix, showDeleted, showNotes, viewMode, pageSize, currentPage, isLoggedIn])
 
   const connect = async (form: typeof loginForm) => {
     if (!form.accessKey || !form.secretKey) {
@@ -536,7 +527,6 @@ function App() {
       setViewMode('grid')
       setPageSize(100)
       setCurrentPage(1)
-      setSortMode('name')
 
       if (bucketList.length > 0) {
         // Prefer user's personal bucket over "shared"
@@ -575,7 +565,6 @@ function App() {
     setViewMode('grid')
     setPageSize(100)
     setCurrentPage(1)
-    setSortMode('name')
     toast.info('Disconnected')
   }
 
@@ -655,10 +644,10 @@ function App() {
     }
   }, [showNotes, searchType, items, selectedBucket, client])
 
-  // Reset to page 1 on search or explicit page size / sort change
+  // Reset to page 1 on search or page size change
   useEffect(() => {
     setCurrentPage(1)
-  }, [search, searchType, pageSize, sortMode])
+  }, [search, searchType, pageSize])
 
   const navigateTo = (prefix: string) => {
     if (!selectedBucket || !client || !creds) return
@@ -690,34 +679,22 @@ function App() {
     return crumbs
   }, [currentPrefix])
 
+  // No custom sorting: object keys are timestamp-prefixed, so MinIO returns
+  // them already ordered by upload time. We only apply the search filter and
+  // otherwise keep the list exactly as received (folders first, then files).
   const filteredItems = useMemo(() => {
-    let result = items
     const q = search.trim().toLowerCase()
-    if (q) {
-      if (searchType === 'name') {
-        result = items.filter(i => i.name.toLowerCase().includes(q))
-      } else if (searchType === 'note') {
-        result = items.filter(i => {
-          const note = notes[i.fullPath] || ''
-          return note.toLowerCase().includes(q)
-        })
-      }
+    if (!q) return items
+    if (searchType === 'name') {
+      return items.filter(i => i.name.toLowerCase().includes(q))
     }
-    return [...result].sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+    if (searchType === 'note') {
+      return items.filter(i => (notes[i.fullPath] || '').toLowerCase().includes(q))
+    }
+    return items
+  }, [items, search, searchType, notes])
 
-      if (sortMode === 'date') {
-        const dateA = a.lastModified ? a.lastModified.getTime() : 0
-        const dateB = b.lastModified ? b.lastModified.getTime() : 0
-        if (dateB !== dateA) return dateB - dateA // newest first
-        return a.name.localeCompare(b.name)
-      }
-
-      return a.name.localeCompare(b.name)
-    })
-  }, [items, search, searchType, notes, sortMode])
-
-  // Client-side pagination over the filtered + sorted results
+  // Client-side pagination over the filtered results
   const visibleItems = useMemo(() => {
     if (pageSize === 'all') return filteredItems
     const size = pageSize
@@ -2086,16 +2063,6 @@ function App() {
                         <option value={200}>200</option>
                         <option value={400}>400</option>
                         <option value="all">All</option>
-                      </select>
-
-                      <select
-                        value={sortMode}
-                        onChange={(e) => setSortMode(e.target.value as 'name' | 'date')}
-                        className="select"
-                        title="Sort by"
-                      >
-                        <option value="name">Alphabetical</option>
-                        <option value="date">Upload date</option>
                       </select>
 
                       {/* View toggle: grid / list */}
