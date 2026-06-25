@@ -15,8 +15,8 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
-  LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu, Sun, Moon, Search
+  LogOut, ChevronRight, ChevronLeft, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
+  LayoutGrid, List, Menu, Sun, Moon, Search, Users
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -1819,6 +1819,27 @@ function App() {
               </div>
             )}
 
+            {/* Switch between personal and shared bucket */}
+            {(() => {
+              const homeBucket = buckets.find(b => b !== 'shared')
+              const onShared = selectedBucket === 'shared'
+              if (onShared && homeBucket) {
+                return (
+                  <button onClick={() => selectBucket(homeBucket)} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5" title="Go to your files">
+                    <Folder size={15} /> <span>My files</span>
+                  </button>
+                )
+              }
+              if (!onShared && buckets.includes('shared')) {
+                return (
+                  <button onClick={() => selectBucket('shared')} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5" title="Go to shared files">
+                    <Users size={15} /> <span>Shared</span>
+                  </button>
+                )
+              }
+              return null
+            })()}
+
             {selectedBucket && (
               <button onClick={createFolder} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5">
                 <FolderPlus size={15} /> <span>Create folder</span>
@@ -1901,6 +1922,26 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {(() => {
+                const homeBucket = buckets.find(b => b !== 'shared')
+                const onShared = selectedBucket === 'shared'
+                if (onShared && homeBucket) {
+                  return (
+                    <button onClick={() => { selectBucket(homeBucket); setMobileMenuOpen(false); }} className="menu-item">
+                      <Folder size={17} /> My files
+                    </button>
+                  )
+                }
+                if (!onShared && buckets.includes('shared')) {
+                  return (
+                    <button onClick={() => { selectBucket('shared'); setMobileMenuOpen(false); }} className="menu-item">
+                      <Users size={17} /> Shared
+                    </button>
+                  )
+                }
+                return null
+              })()}
 
               {selectedBucket && (
                 <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="menu-item">
@@ -1985,36 +2026,19 @@ function App() {
                   </div>
                 )}
 
-                {/* Breadcrumb path (above the search toolbar) */}
+                {/* Breadcrumb path (above the search toolbar) — bucket name is the "home" crumb */}
                 <div className="mb-3 flex items-center gap-1 min-w-0 overflow-x-auto whitespace-nowrap text-xs sm:text-sm">
-                  <button onClick={goHome} className="flex items-center gap-1 hover:text-beige-700 text-warm-900 shrink-0">
-                    <Home size={14} />
-                  </button>
-                  <select
-                    value={selectedBucket}
-                    onChange={(e) => {
-                      const newBucket = e.target.value;
-                      if (newBucket && newBucket !== selectedBucket) {
-                        selectBucket(newBucket);
-                      }
-                    }}
-                    className="bg-transparent border-0 p-0 font-medium text-warm-900 cursor-pointer focus:outline-none text-xs sm:text-sm shrink-0"
-                    title="Select drive"
+                  <button
+                    onClick={goHome}
+                    className="font-medium text-fg hover:text-accent shrink-0 truncate max-w-[10rem]"
+                    title="Go to root"
                   >
-                    {(() => {
-                      const home = buckets.find(b => b !== 'shared');
-                      return home ? (
-                        <option value={home}>{home}</option>
-                      ) : null;
-                    })()}
-                    {buckets.includes('shared') && (
-                      <option value="shared">Shared</option>
-                    )}
-                  </select>
+                    {selectedBucket === 'shared' ? 'Shared' : selectedBucket}
+                  </button>
                   {breadcrumbs.map((crumb, idx) => (
-                    <span key={idx} className="flex items-center gap-0.5 text-beige-500 shrink-0">
+                    <span key={idx} className="flex items-center gap-0.5 text-muted shrink-0">
                       <ChevronRight size={12} />
-                      <button onClick={() => navigateTo(crumb.prefix)} className="hover:text-beige-700 text-warm-800 truncate max-w-[5rem] sm:max-w-[8rem]">
+                      <button onClick={() => navigateTo(crumb.prefix)} className="hover:text-fg text-muted truncate max-w-[5rem] sm:max-w-[8rem]">
                         {crumb.label}
                       </button>
                     </span>
