@@ -1827,24 +1827,6 @@ function App() {
               </div>
             )}
 
-            <button
-              onClick={() => setShowDeleted(!showDeleted)}
-              className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-sm py-1.5 px-3 flex items-center gap-1.5`}
-              title={showDeleted ? 'Hide deleted photos' : 'Show deleted photos (including delete markers)'}
-            >
-              {showDeleted ? <EyeOff size={15} /> : <Eye size={15} />}
-              <span>{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
-            </button>
-
-            <button
-              onClick={() => setShowNotes(!showNotes)}
-              className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-sm py-1.5 px-3 flex items-center gap-1.5`}
-              title={showNotes ? 'Hide notes' : 'Show notes (tooltips on hover when off)'}
-            >
-              <MessageSquare size={15} />
-              <span>{showNotes ? 'Hide notes' : 'Show notes'}</span>
-            </button>
-
             {selectedBucket && (
               <button onClick={createFolder} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5">
                 <FolderPlus size={15} /> <span>Create folder</span>
@@ -1927,22 +1909,6 @@ function App() {
                   </div>
                 </div>
               )}
-
-              <button
-                onClick={() => { setShowDeleted(!showDeleted); setMobileMenuOpen(false); }}
-                className={`menu-item ${showDeleted ? 'text-accent font-medium' : ''}`}
-              >
-                {showDeleted ? <EyeOff size={17} /> : <Eye size={17} />}
-                <span>{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
-              </button>
-
-              <button
-                onClick={() => { setShowNotes(!showNotes); setMobileMenuOpen(false); }}
-                className={`menu-item ${showNotes ? 'text-accent font-medium' : ''}`}
-              >
-                <MessageSquare size={17} />
-                <span>{showNotes ? 'Hide notes' : 'Show notes'}</span>
-              </button>
 
               {selectedBucket && (
                 <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="menu-item">
@@ -2116,6 +2082,24 @@ function App() {
                         <option value="name">Alphabetical</option>
                         <option value="date">Upload date</option>
                       </select>
+
+                      {/* Show deleted / show notes toggles (icon-only, like the view toggle) */}
+                      <button
+                        onClick={() => setShowDeleted(!showDeleted)}
+                        aria-pressed={showDeleted}
+                        title={showDeleted ? 'Hide deleted' : 'Show deleted (incl. delete markers)'}
+                        className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors ${showDeleted ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}`}
+                      >
+                        {showDeleted ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                      <button
+                        onClick={() => setShowNotes(!showNotes)}
+                        aria-pressed={showNotes}
+                        title={showNotes ? 'Hide notes' : 'Show notes'}
+                        className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors ${showNotes ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}`}
+                      >
+                        <MessageSquare size={16} />
+                      </button>
 
                       {/* View toggle: grid / list */}
                       <div className="segmented shrink-0">
