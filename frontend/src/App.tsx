@@ -2083,24 +2083,6 @@ function App() {
                         <option value="date">Upload date</option>
                       </select>
 
-                      {/* Show deleted / show notes toggles (icon-only, like the view toggle) */}
-                      <button
-                        onClick={() => setShowDeleted(!showDeleted)}
-                        aria-pressed={showDeleted}
-                        title={showDeleted ? 'Hide deleted' : 'Show deleted (incl. delete markers)'}
-                        className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors ${showDeleted ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}`}
-                      >
-                        {showDeleted ? <EyeOff size={16} /> : <Eye size={16} />}
-                      </button>
-                      <button
-                        onClick={() => setShowNotes(!showNotes)}
-                        aria-pressed={showNotes}
-                        title={showNotes ? 'Hide notes' : 'Show notes'}
-                        className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors ${showNotes ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}`}
-                      >
-                        <MessageSquare size={16} />
-                      </button>
-
                       {/* View toggle: grid / list */}
                       <div className="segmented shrink-0">
                         <button
@@ -2120,6 +2102,24 @@ function App() {
                           <List size={15} />
                         </button>
                       </div>
+
+                      {/* Show deleted / show notes toggles (icon-only, like the view toggle) */}
+                      <button
+                        onClick={() => setShowDeleted(!showDeleted)}
+                        aria-pressed={showDeleted}
+                        title={showDeleted ? 'Hide deleted' : 'Show deleted (incl. delete markers)'}
+                        className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors ${showDeleted ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}`}
+                      >
+                        {showDeleted ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                      <button
+                        onClick={() => setShowNotes(!showNotes)}
+                        aria-pressed={showNotes}
+                        title={showNotes ? 'Hide notes' : 'Show notes'}
+                        className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors ${showNotes ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}`}
+                      >
+                        <MessageSquare size={16} />
+                      </button>
 
                       {totalPages > 1 && (
                         <div className="flex items-center gap-0.5 sm:gap-1">
