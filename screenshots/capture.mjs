@@ -107,6 +107,12 @@ async function main() {
   try {
     for (const t of TARGETS) {
       const page = await browser.newPage()
+      if (process.env.THEME) {
+        const theme = process.env.THEME
+        await page.evaluateOnNewDocument((tm) => {
+          try { localStorage.setItem('minstorage-theme', tm) } catch (e) {}
+        }, theme)
+      }
       await page.setViewport({
         width: t.width,
         height: t.height,

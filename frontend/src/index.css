@@ -2,169 +2,219 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------------------ *
+ * Design tokens. Colors are space-separated RGB triplets so they can
+ * be consumed both as `rgb(var(--x))` here and as Tailwind utilities
+ * (`bg-beige-50`, `text-fg`, …) via tailwind.config.js. The `.dark`
+ * block flips every token, so the whole UI themes without per-element
+ * dark: variants.
+ * ------------------------------------------------------------------ */
 :root {
-  --bg: #ffffff;
-  --bg-soft: #faf7f2;
-  --beige-50: #fbf8f3;
-  --beige-100: #f5f0e6;
-  --beige-200: #ede4d3;
-  --beige-300: #e0d4be;
-  --beige-400: #d4c5a7;
-  --beige-500: #c9b49d;
-  --beige-600: #b8a48a;
-  --text: #4a433b;
-  --text-light: #6f665b;
-  --border: #e6dfd3;
-  --card: #ffffff;
+  /* Brand scales (light) */
+  --beige-50: 251 248 243;
+  --beige-100: 245 240 230;
+  --beige-200: 237 228 211;
+  --beige-300: 224 212 190;
+  --beige-400: 212 197 167;
+  --beige-500: 201 180 157;
+  --beige-600: 184 164 138;
+  --beige-700: 154 135 111;
+  --beige-800: 122 107 88;
+  --beige-900: 92 80 63;
+  --warm-50: 250 247 242;
+  --warm-100: 244 240 233;
+  --warm-800: 63 58 51;
+  --warm-900: 46 41 35;
+
+  /* Semantic (light) */
+  --bg: 250 247 242;        /* page canvas */
+  --surface: 255 255 255;   /* cards, header, rows, modals */
+  --surface-2: 245 240 230; /* insets, hovers */
+  --border: 232 225 213;
+  --fg: 46 41 35;
+  --muted: 122 107 88;
+  --accent: 111 94 72;      /* deep warm taupe */
+  --accent-hover: 92 78 60;
+  --accent-fg: 250 247 242;
+  --ring: 201 180 157;
+
+  color-scheme: light;
+}
+
+.dark {
+  /* Brand scales (dark): surfaces/borders go dark, text shades go light,
+     accent shades stay warm so progress bars / accents still read. */
+  --beige-50: 26 23 19;
+  --beige-100: 33 29 24;
+  --beige-200: 45 39 33;
+  --beige-300: 60 53 45;
+  --beige-400: 92 82 68;
+  --beige-500: 201 180 157;
+  --beige-600: 184 168 145;
+  --beige-700: 162 150 131;
+  --beige-800: 205 193 174;
+  --beige-900: 232 225 212;
+  --warm-50: 20 18 15;
+  --warm-100: 28 24 20;
+  --warm-800: 214 208 198;
+  --warm-900: 243 239 232;
+
+  /* Semantic (dark) */
+  --bg: 18 16 13;
+  --surface: 30 26 22;
+  --surface-2: 39 34 29;
+  --border: 49 43 37;
+  --fg: 243 239 232;
+  --muted: 168 156 140;
+  --accent: 201 180 157;    /* light tan pops on charcoal */
+  --accent-hover: 214 197 167;
+  --accent-fg: 28 24 20;
+  --ring: 201 180 157;
+
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #root {
   min-height: 100vh;
 }
 
-/* Minimalistic clean components.
-   Wrapped in @layer components so Tailwind utility classes (padding, font-size,
-   etc.) reliably override these defaults — otherwise, being plain CSS declared
-   after @tailwind utilities, they'd win the cascade and silently kill all the
-   responsive sizing applied in markup. */
+/* Subtle, theme-aware scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border)) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgb(var(--muted) / 0.6); background-clip: padding-box; }
+
+/* ------------------------------------------------------------------ *
+ * Components. Wrapped in @layer components so Tailwind utilities still
+ * win the cascade (keeps the responsive sizing in markup working).
+ * ------------------------------------------------------------------ */
 @layer components {
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 18px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all 0.1s ease;
-  cursor: pointer;
-  border: 1px solid transparent;
-}
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 9px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+    cursor: pointer;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .btn:active { transform: translateY(0.5px); }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgb(var(--ring) / 0.45);
+  }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.btn-primary {
-  background: var(--beige-500);
-  color: white;
-  border-color: var(--beige-500);
-}
+  .btn-primary {
+    background: rgb(var(--accent));
+    color: rgb(var(--accent-fg));
+    border-color: rgb(var(--accent));
+  }
+  .btn-primary:hover { background: rgb(var(--accent-hover)); border-color: rgb(var(--accent-hover)); }
 
-.btn-primary:hover {
-  background: var(--beige-600);
-  border-color: var(--beige-600);
-}
+  .btn-secondary {
+    background: rgb(var(--surface));
+    color: rgb(var(--fg));
+    border-color: rgb(var(--border));
+  }
+  .btn-secondary:hover { background: rgb(var(--surface-2)); border-color: rgb(var(--beige-300)); }
 
-.btn-secondary {
-  background: var(--bg);
-  color: var(--text);
-  border-color: var(--border);
-}
+  .btn-ghost {
+    background: transparent;
+    color: rgb(var(--muted));
+    padding: 8px 12px;
+  }
+  .btn-ghost:hover { background: rgb(var(--surface-2)); color: rgb(var(--fg)); }
 
-.btn-secondary:hover {
-  background: var(--bg-soft);
-}
+  .card {
+    background: rgb(var(--surface));
+    border: 1px solid rgb(var(--border));
+    border-radius: 14px;
+  }
 
-.btn-ghost {
-  background: transparent;
-  color: var(--text-light);
-  padding: 8px 12px;
-}
+  .input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid rgb(var(--border));
+    border-radius: 10px;
+    background: rgb(var(--surface));
+    color: rgb(var(--fg));
+    font-size: 14px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .input:focus {
+    outline: none;
+    border-color: rgb(var(--accent));
+    box-shadow: 0 0 0 3px rgb(var(--ring) / 0.25);
+  }
+  .input::placeholder { color: rgb(var(--muted)); }
 
-.btn-ghost:hover {
-  background: var(--beige-100);
-  color: var(--text);
-}
+  .file-item {
+    transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+  }
+  .file-item:hover {
+    border-color: rgb(var(--beige-300));
+    box-shadow: 0 6px 20px -12px rgb(0 0 0 / 0.35);
+    transform: translateY(-1px);
+  }
 
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
+  .thumbnail {
+    background: rgb(var(--surface-2));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .thumbnail img { width: 100%; height: 100%; object-fit: cover; }
 
-.input {
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 14px;
-  transition: border-color 0.1s;
-}
+  .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 14px; color: rgb(var(--muted)); }
+  .breadcrumb a { color: rgb(var(--fg)); text-decoration: none; }
+  .breadcrumb a:hover { color: rgb(var(--accent)); }
 
-.input:focus {
-  outline: none;
-  border-color: var(--beige-400);
-  box-shadow: 0 0 0 3px rgba(201, 180, 157, 0.1);
-}
-
-.input::placeholder {
-  color: var(--text-light);
-}
-
-.file-item {
-  transition: all 0.1s ease;
-}
-
-.file-item:hover {
-  border-color: var(--beige-300);
-  background: var(--beige-50);
-}
-
-.thumbnail {
-  background: var(--beige-100);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.thumbnail img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  color: var(--text-light);
-}
-
-.breadcrumb a {
-  color: var(--text);
-  text-decoration: none;
-}
-
-.breadcrumb a:hover {
-  color: var(--beige-600);
-}
-
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-}
-
-.modal-content {
-  background: white;
-  border-radius: 12px;
-  width: 100%;
-  max-height: 90vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgb(0 0 0 / 0.55);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 100;
+  }
+  .modal-content {
+    background: rgb(var(--surface));
+    border: 1px solid rgb(var(--border));
+    border-radius: 16px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 60px -20px rgb(0 0 0 / 0.5);
+  }
 }

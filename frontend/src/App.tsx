@@ -16,7 +16,7 @@ import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu
+  LayoutGrid, List, Menu, Sun, Moon
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -344,6 +344,17 @@ function App() {
   const [isSavingNote, setIsSavingNote] = useState(false)
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
+  // Theme (light/dark). The initial class is applied pre-paint by an inline
+  // script in index.html; we mirror it here and keep it in sync + persisted.
+  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+  )
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    try { localStorage.setItem('minstorage-theme', theme) } catch {}
+  }, [theme])
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
 
   const [loginForm, setLoginForm] = useState({ accessKey: '', secretKey: '' })
   const [showPassword, setShowPassword] = useState(false)
@@ -1785,13 +1796,13 @@ function App() {
   return (
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
-      <header className="border-b border-beige-200 bg-white/80 backdrop-blur sticky top-0 z-50">
+      <header className="border-b border-beige-200 bg-surface/80 backdrop-blur sticky top-0 z-50">
         {/* Navbar — action buttons on the left (full toolbar on desktop; phone & tablet use the burger) */}
         <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4 overflow-hidden">
           <div className="hidden lg:flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
             {isInSelectMode && (
               <div className="flex items-center gap-1.5 pr-1.5 mr-0.5 border-r border-beige-200">
-                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-xs font-medium">
+                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-500/25 dark:text-blue-200 rounded-md text-xs font-medium">
                   {selectedItems.size}
                 </span>
                 <button onClick={toggleSelectAll} className="btn btn-secondary text-sm py-1.5 px-3">
@@ -1874,10 +1885,20 @@ function App() {
             </button>
           </div>
 
+          {/* Theme toggle (always visible, far right) */}
+          <button
+            onClick={toggleTheme}
+            className="ml-auto shrink-0 p-2.5 rounded-lg text-muted hover:text-fg hover:bg-beige-100"
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          >
+            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+
           {/* Burger menu button (phone + tablet) */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="lg:hidden ml-auto shrink-0 p-2.5 -mr-1 rounded-lg text-beige-700 hover:text-beige-900 hover:bg-beige-100"
+            className="lg:hidden shrink-0 p-2.5 -mr-1 rounded-lg text-beige-700 hover:text-beige-900 hover:bg-beige-100"
             aria-label="Toggle menu"
             aria-expanded={mobileMenuOpen}
           >
@@ -1887,11 +1908,11 @@ function App() {
 
         {/* Burger menu dropdown (phone + tablet) */}
         {mobileMenuOpen && (
-          <div className="lg:hidden border-t border-beige-200 bg-white px-3 py-3 text-sm">
+          <div className="lg:hidden border-t border-beige-200 bg-surface px-3 py-3 text-sm">
             <div className="flex flex-col gap-1.5">
               {isInSelectMode && (
                 <div className="flex flex-col gap-2 pb-3 mb-1 border-b border-beige-100">
-                  <span className="self-start px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-xs font-medium">
+                  <span className="self-start px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-500/25 dark:text-blue-200 rounded-md text-xs font-medium">
                     {selectedItems.size} selected
                   </span>
                   <button onClick={toggleSelectAll} className="btn btn-secondary text-sm py-2.5 justify-center w-full">
@@ -2091,7 +2112,7 @@ function App() {
                       </select>
 
                       {/* View toggle: grid / list (moved to nav bar) */}
-                      <div className="flex items-center border border-beige-300 bg-white rounded-lg overflow-hidden text-xs shadow-sm flex-shrink-0 min-w-[60px]">
+                      <div className="flex items-center border border-beige-300 bg-surface rounded-lg overflow-hidden text-xs shadow-sm flex-shrink-0 min-w-[60px]">
                         <button
                           onClick={() => setViewMode('grid')}
                           className={`px-2 py-1.5 sm:px-2.5 sm:py-1.5 flex items-center transition-colors ${viewMode === 'grid' ? 'bg-beige-300 text-warm-900' : 'text-beige-600 hover:bg-beige-100 hover:text-warm-800'}`}
@@ -2172,7 +2193,7 @@ function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="border border-beige-200 rounded-xl bg-white overflow-hidden">
+                    <div className="border border-beige-200 rounded-xl bg-surface overflow-hidden">
                       {Array.from({ length: 6 }).map((_, i) => (
                         <div key={i} className="h-9 bg-beige-100 animate-pulse border-b border-beige-200 last:border-b-0" />
                       ))}
@@ -2213,7 +2234,7 @@ function App() {
                                 className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
                                   selectedItems.has(item.fullPath)
                                     ? 'bg-blue-500 border-blue-500'
-                                    : 'bg-white/80 border-gray-300 hover:border-blue-400'
+                                    : 'bg-surface/80 border-gray-300 hover:border-blue-400'
                                 }`}
                               >
                                 {selectedItems.has(item.fullPath) && <Check size={10} className="text-white" />}
@@ -2270,7 +2291,7 @@ function App() {
                                     className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
                                       selectedItems.has(item.fullPath)
                                         ? 'bg-blue-500 border-blue-500'
-                                        : 'bg-white/80 border-gray-300 hover:border-blue-400'
+                                        : 'bg-surface/80 border-gray-300 hover:border-blue-400'
                                     }`}
                                   >
                                     {selectedItems.has(item.fullPath) && <Check size={10} className="text-white" />}
@@ -2301,7 +2322,7 @@ function App() {
                                 {item.isDeleted ? (
                                   <button
                                     onClick={(e) => { e.stopPropagation(); restoreFile(item); }}
-                                    className="bg-white/90 hover:bg-green-50 text-green-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                    className="bg-surface/90 hover:bg-green-50 text-green-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
                                     title="Restore"
                                   >
                                     <RotateCcw size={15} />
@@ -2310,21 +2331,21 @@ function App() {
                                   <>
                                     <button
                                       onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
-                                      className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
                                       title="Download"
                                     >
                                       <Download size={15} />
                                     </button>
                                     <button
                                       onClick={(e) => { e.stopPropagation(); openShareModal(item); }}
-                                      className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
                                       title="Get shareable download link"
                                     >
                                       <Link size={15} />
                                     </button>
                                     <button
                                       onClick={(e) => { e.stopPropagation(); openNoteModal(item); }}
-                                      className="bg-white/90 hover:bg-white text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
                                       title="Add/Edit note"
                                     >
                                       <MessageSquare size={15} />
@@ -2333,7 +2354,7 @@ function App() {
                                 )}
                                 <button
                                   onClick={(e) => { e.stopPropagation(); deleteFile(item); }}
-                                  className="bg-white/90 hover:bg-red-50 text-red-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                  className="bg-surface/90 hover:bg-red-50 text-red-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
                                   title={item.isDeleted ? "Permanently delete" : "Delete"}
                                 >
                                   <Trash2 size={15} />
@@ -2363,7 +2384,7 @@ function App() {
                               </div>
 
                               {showNotes && notes[item.fullPath] && (
-                                <div className="mt-1 text-sm text-black break-words" title={notes[item.fullPath]}>
+                                <div className="mt-1 text-sm text-fg break-words" title={notes[item.fullPath]}>
                                   {notes[item.fullPath]}
                                 </div>
                               )}
@@ -2375,7 +2396,7 @@ function App() {
                   </div>
                 ) : (
                   /* Minimal list view - no image previews at all */
-                  <div className="divide-y divide-beige-200 border border-beige-200 rounded-xl bg-white overflow-hidden">
+                  <div className="divide-y divide-beige-200 border border-beige-200 rounded-xl bg-surface overflow-hidden">
                     {visibleItems.map((item, index) => {
                       const isSelected = selectedItems.has(item.fullPath)
                       return (
@@ -2402,7 +2423,7 @@ function App() {
                         >
                           {/* Select checkbox — hidden unless selected/in select mode or hovered */}
                           <div
-                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-white border-gray-300 hover:border-blue-400'} ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
+                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-surface border-gray-300 hover:border-blue-400'} ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
                             onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
                           >
                             {isSelected && <Check size={10} className="text-white" />}
@@ -2433,7 +2454,7 @@ function App() {
 
                           {/* Note (inline if shown) */}
                           {showNotes && !item.isDir && notes[item.fullPath] && (
-                            <div className="max-w-[120px] sm:max-w-[180px] truncate text-xs text-black" title={notes[item.fullPath]}>
+                            <div className="max-w-[120px] sm:max-w-[180px] truncate text-xs text-fg" title={notes[item.fullPath]}>
                               {notes[item.fullPath]}
                             </div>
                           )}
@@ -2542,10 +2563,10 @@ function App() {
               <img
                 src={previewUrl}
                 alt={previewItem.name}
-                className="max-w-full max-h-full object-contain rounded-lg shadow-sm bg-white"
+                className="max-w-full max-h-full object-contain rounded-lg shadow-sm bg-surface"
               />
             </div>
-            <div className="px-5 py-2.5 text-xs border-t border-beige-200 bg-white text-beige-600 flex justify-between">
+            <div className="px-5 py-2.5 text-xs border-t border-beige-200 bg-surface text-beige-600 flex justify-between">
               <div>{formatSize(previewItem.size)}</div>
               {previewItem.lastModified && <div>{format(previewItem.lastModified, 'PPpp')}</div>}
             </div>
@@ -2811,7 +2832,7 @@ function App() {
       {/* Cursor-following tooltip for notes */}
       {tooltip && !showNotes && (
         <div 
-          className="fixed z-[100] pointer-events-none bg-beige-50 border border-beige-200 text-black text-sm px-3 py-2 rounded-lg shadow-md max-w-[280px] whitespace-pre-wrap break-words"
+          className="fixed z-[100] pointer-events-none bg-beige-50 border border-beige-200 text-fg text-sm px-3 py-2 rounded-lg shadow-md max-w-[280px] whitespace-pre-wrap break-words"
           style={{ 
             left: `${tooltip.x + 12}px`, 
             top: `${tooltip.y + 12}px` 
