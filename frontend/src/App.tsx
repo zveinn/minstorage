@@ -16,7 +16,7 @@ import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, Home, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu, Sun, Moon
+  LayoutGrid, List, Menu, Sun, Moon, Search
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -1796,9 +1796,9 @@ function App() {
   return (
     <div className="flex flex-col min-h-screen bg-warm-50">
       {/* Header */}
-      <header className="border-b border-beige-200 bg-surface/80 backdrop-blur sticky top-0 z-50">
+      <header className="relative border-b border-line/70 bg-surface/70 backdrop-blur-xl sticky top-0 z-50">
         {/* Navbar — action buttons on the left (full toolbar on desktop; phone & tablet use the burger) */}
-        <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4 overflow-hidden">
+        <div className="px-3 sm:px-4 lg:px-6 h-16 flex items-center gap-2 sm:gap-3 lg:gap-4 overflow-visible">
           <div className="hidden lg:flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
             {isInSelectMode && (
               <div className="flex items-center gap-1.5 pr-1.5 mr-0.5 border-r border-beige-200">
@@ -1888,7 +1888,7 @@ function App() {
           {/* Theme toggle (always visible, far right) */}
           <button
             onClick={toggleTheme}
-            className="ml-auto shrink-0 p-2.5 rounded-lg text-muted hover:text-fg hover:bg-beige-100"
+            className="btn-icon ml-auto shrink-0"
             aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
             title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
           >
@@ -1898,7 +1898,7 @@ function App() {
           {/* Burger menu button (phone + tablet) */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="lg:hidden shrink-0 p-2.5 -mr-1 rounded-lg text-beige-700 hover:text-beige-900 hover:bg-beige-100"
+            className="btn-icon lg:hidden shrink-0 -mr-1"
             aria-label="Toggle menu"
             aria-expanded={mobileMenuOpen}
           >
@@ -1906,66 +1906,69 @@ function App() {
           </button>
         </div>
 
-        {/* Burger menu dropdown (phone + tablet) */}
+        {/* Burger menu (phone + tablet): floating panel */}
         {mobileMenuOpen && (
-          <div className="lg:hidden border-t border-beige-200 bg-surface px-3 py-3 text-sm">
-            <div className="flex flex-col gap-1.5">
+          <>
+            <div className="lg:hidden fixed inset-0 z-40" onClick={() => setMobileMenuOpen(false)} />
+            <div className="lg:hidden absolute right-3 top-full mt-2 z-50 w-[17rem] max-w-[calc(100vw-1.5rem)] menu-panel p-2 text-sm">
               {isInSelectMode && (
-                <div className="flex flex-col gap-2 pb-3 mb-1 border-b border-beige-100">
-                  <span className="self-start px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-500/25 dark:text-blue-200 rounded-md text-xs font-medium">
+                <div className="flex flex-col gap-2 p-2 mb-1 border-b border-line">
+                  <span className="self-start px-2.5 py-1 bg-blue-100 text-blue-700 dark:bg-blue-500/25 dark:text-blue-200 rounded-full text-xs font-medium">
                     {selectedItems.size} selected
                   </span>
-                  <button onClick={toggleSelectAll} className="btn btn-secondary text-sm py-2.5 justify-center w-full">
+                  <button onClick={toggleSelectAll} className="btn btn-secondary text-sm py-2 justify-center w-full">
                     {allFilteredSelected ? 'Deselect all' : 'Select all'}
                   </button>
                   <div className="grid grid-cols-2 gap-1.5">
-                    <button onClick={() => { downloadSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-primary text-sm py-2.5 justify-center">Download</button>
-                    <button onClick={() => { restoreSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 justify-center text-green-600">Restore</button>
-                    <button onClick={() => { deleteSelectedItems(); setMobileMenuOpen(false); }} className={`btn text-sm py-2.5 justify-center ${selectedDeleteIsForce ? 'btn-primary bg-red-600 border-red-600' : 'btn-secondary text-red-600'}`}>{selectedDeleteIsForce ? 'Delete forever' : 'Delete'}</button>
-                    <button onClick={() => { clearSelection(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 justify-center">Clear</button>
+                    <button onClick={() => { downloadSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-primary text-sm py-2 justify-center">Download</button>
+                    <button onClick={() => { restoreSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2 justify-center text-green-600">Restore</button>
+                    <button onClick={() => { deleteSelectedItems(); setMobileMenuOpen(false); }} className={`btn text-sm py-2 justify-center ${selectedDeleteIsForce ? 'btn-primary bg-red-600 text-white' : 'btn-secondary text-red-600'}`}>{selectedDeleteIsForce ? 'Delete forever' : 'Delete'}</button>
+                    <button onClick={() => { clearSelection(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2 justify-center">Clear</button>
                   </div>
                 </div>
               )}
 
               <button
                 onClick={() => { setShowDeleted(!showDeleted); setMobileMenuOpen(false); }}
-                className={`btn ${showDeleted ? 'btn-primary' : 'btn-secondary'} text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start`}
+                className={`menu-item ${showDeleted ? 'text-accent font-medium' : ''}`}
               >
-                {showDeleted ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showDeleted ? <EyeOff size={17} /> : <Eye size={17} />}
                 <span>{showDeleted ? 'Hide deleted' : 'Show deleted'}</span>
               </button>
 
               <button
                 onClick={() => { setShowNotes(!showNotes); setMobileMenuOpen(false); }}
-                className={`btn ${showNotes ? 'btn-primary' : 'btn-secondary'} text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start`}
+                className={`menu-item ${showNotes ? 'text-accent font-medium' : ''}`}
               >
-                <MessageSquare size={16} />
+                <MessageSquare size={17} />
                 <span>{showNotes ? 'Hide notes' : 'Show notes'}</span>
               </button>
 
               {selectedBucket && (
-                <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start">
-                  <FolderPlus size={16} /> Create folder
+                <button onClick={() => { createFolder(); setMobileMenuOpen(false); }} className="menu-item">
+                  <FolderPlus size={17} /> Create folder
                 </button>
               )}
 
-              <label className="btn btn-primary cursor-pointer text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start">
-                <UploadIcon size={16} /> Upload files
+              <label className="menu-item cursor-pointer">
+                <UploadIcon size={17} /> Upload files
                 {/* @ts-ignore */}
                 <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) { uploadFiles(e.target.files); setMobileMenuOpen(false); } e.target.value = ''; }} />
               </label>
 
-              <label className="btn btn-secondary cursor-pointer text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start">
-                <FolderUp size={16} /> Upload folder
+              <label className="menu-item cursor-pointer">
+                <FolderUp size={17} /> Upload folder
                 {/* @ts-ignore */}
                 <input type="file" webkitdirectory="" directory="" multiple className="hidden" onChange={(e) => { handleFolderUpload(e); setMobileMenuOpen(false); }} />
               </label>
 
-              <button onClick={() => { disconnect(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2.5 px-3 flex items-center gap-2.5 w-full justify-start text-red-600">
-                <LogOut size={16} /> Disconnect
+              <div className="my-1 border-t border-line" />
+
+              <button onClick={() => { disconnect(); setMobileMenuOpen(false); }} className="menu-item text-red-600">
+                <LogOut size={17} /> Disconnect
               </button>
             </div>
-          </div>
+          </>
         )}
       </header>
 
@@ -2064,18 +2067,21 @@ function App() {
                 {!loading && (
                   <div className="mb-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm text-beige-700 overflow-x-hidden">
                     {/* Left: search bar + search type dropdown (grows but capped) */}
-                    <div className="flex flex-1 items-center gap-2 min-w-[120px] sm:min-w-[180px] max-w-md">
-                      <input
-                        type="text"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search..."
-                        className="input flex-1 min-w-[100px] text-sm py-1 sm:py-1.5"
-                      />
+                    <div className="flex flex-1 items-center gap-2 min-w-[120px] sm:min-w-[220px] max-w-md">
+                      <div className="relative flex-1 min-w-[100px]">
+                        <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+                        <input
+                          type="text"
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                          placeholder="Search..."
+                          className="input w-full pl-9 text-sm"
+                        />
+                      </div>
                       <select
                         value={searchType}
                         onChange={(e) => setSearchType(e.target.value as 'name' | 'note')}
-                        className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 w-16 sm:w-20"
+                        className="select"
                       >
                         <option value="name">Name</option>
                         <option value="note">Note</option>
@@ -2083,7 +2089,7 @@ function App() {
                     </div>
 
                     {/* Controls: per-page + page nav (mobile friendly) */}
-                    <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                       <select
                         value={pageSize}
                         onChange={(e) => {
@@ -2092,7 +2098,7 @@ function App() {
                           setPageSize(newSize)
                           setCurrentPage(1)
                         }}
-                        className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 tabular-nums w-14 sm:w-16"
+                        className="select tabular-nums"
                         title="Items per page"
                       >
                         <option value={100}>100</option>
@@ -2104,25 +2110,27 @@ function App() {
                       <select
                         value={sortMode}
                         onChange={(e) => setSortMode(e.target.value as 'name' | 'date')}
-                        className="input text-xs sm:text-sm py-1 px-1.5 sm:py-1.5 sm:px-2 w-28 sm:w-32 flex-shrink-0"
+                        className="select"
                         title="Sort by"
                       >
                         <option value="name">Alphabetical</option>
                         <option value="date">Upload date</option>
                       </select>
 
-                      {/* View toggle: grid / list (moved to nav bar) */}
-                      <div className="flex items-center border border-beige-300 bg-surface rounded-lg overflow-hidden text-xs shadow-sm flex-shrink-0 min-w-[60px]">
+                      {/* View toggle: grid / list */}
+                      <div className="segmented shrink-0">
                         <button
                           onClick={() => setViewMode('grid')}
-                          className={`px-2 py-1.5 sm:px-2.5 sm:py-1.5 flex items-center transition-colors ${viewMode === 'grid' ? 'bg-beige-300 text-warm-900' : 'text-beige-600 hover:bg-beige-100 hover:text-warm-800'}`}
+                          data-active={viewMode === 'grid'}
+                          className="seg-btn"
                           title="Grid view (preview)"
                         >
                           <LayoutGrid size={15} />
                         </button>
                         <button
                           onClick={() => setViewMode('list')}
-                          className={`px-2 py-1.5 sm:px-2.5 sm:py-1.5 flex items-center transition-colors ${viewMode === 'list' ? 'bg-beige-300 text-warm-900' : 'text-beige-600 hover:bg-beige-100 hover:text-warm-800'}`}
+                          data-active={viewMode === 'list'}
+                          className="seg-btn"
                           title="List view"
                         >
                           <List size={15} />

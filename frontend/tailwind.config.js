@@ -27,10 +27,13 @@ export default {
         },
         // Semantic tokens (replace hardcoded white/black so they flip too).
         surface: 'rgb(var(--surface) / <alpha-value>)',
+        surface2: 'rgb(var(--surface-2) / <alpha-value>)',
+        surface3: 'rgb(var(--surface-3) / <alpha-value>)',
         canvas: 'rgb(var(--bg) / <alpha-value>)',
         fg: 'rgb(var(--fg) / <alpha-value>)',
         muted: 'rgb(var(--muted) / <alpha-value>)',
         line: 'rgb(var(--border) / <alpha-value>)',
+        accent: 'rgb(var(--accent) / <alpha-value>)',
       },
     },
   },

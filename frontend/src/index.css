@@ -3,14 +3,11 @@
 @tailwind utilities;
 
 /* ------------------------------------------------------------------ *
- * Design tokens. Colors are space-separated RGB triplets so they can
- * be consumed both as `rgb(var(--x))` here and as Tailwind utilities
- * (`bg-beige-50`, `text-fg`, …) via tailwind.config.js. The `.dark`
- * block flips every token, so the whole UI themes without per-element
- * dark: variants.
+ * Design tokens. Space-separated RGB triplets so they work both as
+ * rgb(var(--x)) here and as Tailwind utilities (bg-beige-50, text-fg,
+ * bg-surface2, …). The `.dark` block flips everything.
  * ------------------------------------------------------------------ */
 :root {
-  /* Brand scales (light) */
   --beige-50: 251 248 243;
   --beige-100: 245 240 230;
   --beige-200: 237 228 211;
@@ -26,15 +23,15 @@
   --warm-800: 63 58 51;
   --warm-900: 46 41 35;
 
-  /* Semantic (light) */
-  --bg: 250 247 242;        /* page canvas */
-  --surface: 255 255 255;   /* cards, header, rows, modals */
-  --surface-2: 245 240 230; /* insets, hovers */
-  --border: 232 225 213;
-  --fg: 46 41 35;
-  --muted: 122 107 88;
-  --accent: 111 94 72;      /* deep warm taupe */
-  --accent-hover: 92 78 60;
+  --bg: 248 245 239;
+  --surface: 255 255 255;
+  --surface-2: 238 231 219;
+  --surface-3: 227 217 201;
+  --border: 231 223 210;
+  --fg: 38 33 27;
+  --muted: 126 112 94;
+  --accent: 38 32 26;        /* espresso primary */
+  --accent-hover: 62 53 43;
   --accent-fg: 250 247 242;
   --ring: 201 180 157;
 
@@ -42,8 +39,6 @@
 }
 
 .dark {
-  /* Brand scales (dark): surfaces/borders go dark, text shades go light,
-     accent shades stay warm so progress bars / accents still read. */
   --beige-50: 26 23 19;
   --beige-100: 33 29 24;
   --beige-200: 45 39 33;
@@ -51,24 +46,24 @@
   --beige-400: 92 82 68;
   --beige-500: 201 180 157;
   --beige-600: 184 168 145;
-  --beige-700: 162 150 131;
+  --beige-700: 168 156 137;
   --beige-800: 205 193 174;
-  --beige-900: 232 225 212;
+  --beige-900: 234 227 214;
   --warm-50: 20 18 15;
   --warm-100: 28 24 20;
-  --warm-800: 214 208 198;
-  --warm-900: 243 239 232;
+  --warm-800: 216 210 200;
+  --warm-900: 244 240 233;
 
-  /* Semantic (dark) */
-  --bg: 18 16 13;
-  --surface: 30 26 22;
-  --surface-2: 39 34 29;
-  --border: 49 43 37;
-  --fg: 243 239 232;
-  --muted: 168 156 140;
-  --accent: 201 180 157;    /* light tan pops on charcoal */
-  --accent-hover: 214 197 167;
-  --accent-fg: 28 24 20;
+  --bg: 17 15 12;
+  --surface: 30 27 23;
+  --surface-2: 43 38 32;
+  --surface-3: 57 50 43;
+  --border: 52 46 39;
+  --fg: 244 240 233;
+  --muted: 166 154 138;
+  --accent: 242 237 228;     /* cream primary */
+  --accent-hover: 223 216 203;
+  --accent-fg: 26 22 18;
   --ring: 201 180 157;
 
   color-scheme: dark;
@@ -83,15 +78,9 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-#root {
-  min-height: 100vh;
-}
+#root { min-height: 100vh; }
 
-/* Subtle, theme-aware scrollbars */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgb(var(--border)) transparent;
-}
+* { scrollbar-width: thin; scrollbar-color: rgb(var(--border)) transparent; }
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-thumb {
   background: rgb(var(--border));
@@ -99,87 +88,151 @@ body {
   border: 2px solid transparent;
   background-clip: padding-box;
 }
-*::-webkit-scrollbar-thumb:hover { background: rgb(var(--muted) / 0.6); background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: rgb(var(--muted) / 0.55); background-clip: padding-box; }
 
-/* ------------------------------------------------------------------ *
- * Components. Wrapped in @layer components so Tailwind utilities still
- * win the cascade (keeps the responsive sizing in markup working).
- * ------------------------------------------------------------------ */
 @layer components {
+  /* --- Buttons: pill-shaped, borderless soft fills --- */
   .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
     padding: 9px 16px;
-    border-radius: 10px;
+    border-radius: 999px;
     font-size: 14px;
     font-weight: 500;
     line-height: 1;
-    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
-    cursor: pointer;
     border: 1px solid transparent;
+    cursor: pointer;
     white-space: nowrap;
     user-select: none;
+    transition: background-color .15s ease, color .15s ease, box-shadow .15s ease, transform .04s ease;
   }
   .btn:active { transform: translateY(0.5px); }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px rgb(var(--ring) / 0.45);
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgb(var(--ring) / 0.5); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
 
   .btn-primary {
     background: rgb(var(--accent));
     color: rgb(var(--accent-fg));
-    border-color: rgb(var(--accent));
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
   }
-  .btn-primary:hover { background: rgb(var(--accent-hover)); border-color: rgb(var(--accent-hover)); }
+  .btn-primary:hover { background: rgb(var(--accent-hover)); }
 
+  /* Soft, fill-only secondary (no border) */
   .btn-secondary {
-    background: rgb(var(--surface));
+    background: rgb(var(--surface-2));
     color: rgb(var(--fg));
-    border-color: rgb(var(--border));
   }
-  .btn-secondary:hover { background: rgb(var(--surface-2)); border-color: rgb(var(--beige-300)); }
+  .btn-secondary:hover { background: rgb(var(--surface-3)); }
 
-  .btn-ghost {
-    background: transparent;
-    color: rgb(var(--muted));
-    padding: 8px 12px;
-  }
+  .btn-ghost { background: transparent; color: rgb(var(--muted)); }
   .btn-ghost:hover { background: rgb(var(--surface-2)); color: rgb(var(--fg)); }
 
-  .card {
-    background: rgb(var(--surface));
-    border: 1px solid rgb(var(--border));
-    border-radius: 14px;
+  /* Circular icon button */
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    color: rgb(var(--muted));
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease;
   }
+  .btn-icon:hover { background: rgb(var(--surface-2)); color: rgb(var(--fg)); }
 
+  /* --- Inputs: filled, borderless until focus --- */
   .input {
     width: 100%;
     padding: 10px 14px;
-    border: 1px solid rgb(var(--border));
-    border-radius: 10px;
-    background: rgb(var(--surface));
+    border-radius: 12px;
+    background: rgb(var(--surface-2));
+    border: 1px solid transparent;
     color: rgb(var(--fg));
     font-size: 14px;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
   }
   .input:focus {
     outline: none;
-    border-color: rgb(var(--accent));
-    box-shadow: 0 0 0 3px rgb(var(--ring) / 0.25);
+    background: rgb(var(--surface));
+    border-color: rgb(var(--accent) / 0.35);
+    box-shadow: 0 0 0 4px rgb(var(--ring) / 0.18);
   }
   .input::placeholder { color: rgb(var(--muted)); }
 
-  .file-item {
-    transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+  /* --- Pill <select> with custom chevron --- */
+  .select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: rgb(var(--surface-2));
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a3927c' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 8px 32px 8px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgb(var(--fg));
+    cursor: pointer;
+    transition: background-color .15s ease, box-shadow .15s ease;
   }
+  .select:hover { background-color: rgb(var(--surface-3)); }
+  .select:focus { outline: none; box-shadow: 0 0 0 3px rgb(var(--ring) / 0.3); }
+
+  /* --- Segmented control (e.g. grid/list) --- */
+  .segmented {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgb(var(--surface-2));
+  }
+  .seg-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    color: rgb(var(--muted));
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease, box-shadow .15s ease;
+  }
+  .seg-btn:hover { color: rgb(var(--fg)); }
+  .seg-btn[data-active='true'] {
+    background: rgb(var(--surface));
+    color: rgb(var(--fg));
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+  }
+
+  /* --- Chip (pill badge / small pill control) --- */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: rgb(var(--surface-2));
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  /* --- Cards: borderless, soft shadow, generous radius --- */
+  .card {
+    background: rgb(var(--surface));
+    border: 1px solid rgb(var(--border) / 0.7);
+    border-radius: 18px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  }
+
+  .file-item { transition: box-shadow .18s ease, transform .12s ease, border-color .15s ease; }
   .file-item:hover {
-    border-color: rgb(var(--beige-300));
-    box-shadow: 0 6px 20px -12px rgb(0 0 0 / 0.35);
-    transform: translateY(-1px);
+    border-color: rgb(var(--border));
+    box-shadow: 0 14px 30px -16px rgb(0 0 0 / 0.45);
+    transform: translateY(-2px);
   }
 
   .thumbnail {
@@ -195,11 +248,32 @@ body {
   .breadcrumb a { color: rgb(var(--fg)); text-decoration: none; }
   .breadcrumb a:hover { color: rgb(var(--accent)); }
 
+  /* --- Floating menu panel (mobile/overflow) --- */
+  .menu-panel {
+    background: rgb(var(--surface));
+    border: 1px solid rgb(var(--border));
+    border-radius: 18px;
+    box-shadow: 0 24px 50px -16px rgb(0 0 0 / 0.45);
+  }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 11px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    color: rgb(var(--fg));
+    cursor: pointer;
+    transition: background-color .12s ease;
+  }
+  .menu-item:hover { background: rgb(var(--surface-2)); }
+
   .modal {
     position: fixed;
     inset: 0;
     background: rgb(0 0 0 / 0.55);
-    backdrop-filter: blur(4px);
+    backdrop-filter: blur(6px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -209,12 +283,12 @@ body {
   .modal-content {
     background: rgb(var(--surface));
     border: 1px solid rgb(var(--border));
-    border-radius: 16px;
+    border-radius: 20px;
     width: 100%;
     max-height: 90vh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 24px 60px -20px rgb(0 0 0 / 0.5);
+    box-shadow: 0 30px 70px -24px rgb(0 0 0 / 0.55);
   }
 }
