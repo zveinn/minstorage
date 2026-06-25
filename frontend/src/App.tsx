@@ -339,7 +339,9 @@ function App() {
     confirmLabel: string
     cancelLabel: string
     danger: boolean
-    resolve: (ok: boolean) => void
+    checkboxLabel?: string
+    checked: boolean
+    resolve: (result: { confirmed: boolean; checked: boolean }) => void
   } | null>(null)
   const [promptDialog, setPromptDialog] = useState<{
     title: string
@@ -786,7 +788,9 @@ function App() {
     confirmLabel?: string
     cancelLabel?: string
     danger?: boolean
-  }): Promise<boolean> =>
+    checkboxLabel?: string
+    checkboxDefault?: boolean
+  }): Promise<{ confirmed: boolean; checked: boolean }> =>
     new Promise((resolve) => {
       setConfirmDialog({
         title: opts.title,
@@ -794,13 +798,15 @@ function App() {
         confirmLabel: opts.confirmLabel ?? 'Confirm',
         cancelLabel: opts.cancelLabel ?? 'Cancel',
         danger: !!opts.danger,
+        checkboxLabel: opts.checkboxLabel,
+        checked: opts.checkboxDefault ?? false,
         resolve,
       })
     })
 
-  const resolveConfirm = (ok: boolean) => {
+  const resolveConfirm = (confirmed: boolean) => {
     setConfirmDialog((d) => {
-      d?.resolve(ok)
+      d?.resolve({ confirmed, checked: d?.checked ?? false })
       return null
     })
   }
@@ -1021,36 +1027,43 @@ function App() {
     const files = selected.filter(i => !i.isDir)
     const folders = selected.filter(i => i.isDir)
 
-    // Files: already-deleted -> permanent purge of all versions; live -> soft delete.
-    const softFiles = files.filter(i => !i.isDeleted)
-    const forceFiles = files.filter(i => i.isDeleted)
-
-    // Folders mirror the two-pass file behaviour, but their state is derived from
-    // their contents (the folder itself has no delete marker): a folder that
-    // still has live objects is soft-deleted (first pass, only the live ones get
-    // delete markers); a folder already fully soft-deleted is hard-deleted
-    // (second pass, purge every version). Probe each to classify it.
-    const folderPlans = await Promise.all(
-      folders.map(async (f) => ({ item: f, hasLive: await prefixHasLiveObjects(f.fullPath).catch(() => true) }))
-    )
-    const softFolders = folderPlans.filter(p => p.hasLive).map(p => p.item)
-    const forceFolders = folderPlans.filter(p => !p.hasLive).map(p => p.item)
-
     const lines: string[] = []
-    if (softFiles.length) lines.push(`• ${softFiles.length} file(s) will be moved to deleted (recoverable).`)
-    if (forceFiles.length) lines.push(`• ${forceFiles.length} already-deleted file(s) will be PERMANENTLY removed.`)
-    if (softFolders.length) lines.push(`• ${softFolders.length} folder(s) will have their contents moved to deleted (recoverable).`)
-    if (forceFolders.length) lines.push(`• ${forceFolders.length} already soft-deleted folder(s) will be PERMANENTLY removed — all contents and versions.`)
-    const hasPermanent = !!(forceFiles.length || forceFolders.length)
-    const onlyPermanent = hasPermanent && !softFiles.length && !softFolders.length
-    const permanentWarning = hasPermanent ? '\n\nPermanent deletions cannot be undone.' : ''
-    const confirmed = await askConfirm({
+    const liveFiles = files.filter(i => !i.isDeleted)
+    const deletedFiles = files.filter(i => i.isDeleted)
+    if (liveFiles.length) lines.push(`• ${liveFiles.length} file(s) will be moved to deleted (recoverable).`)
+    if (deletedFiles.length) lines.push(`• ${deletedFiles.length} already-deleted file(s) will be permanently removed.`)
+    if (folders.length) lines.push(`• ${folders.length} folder(s) and all their contents.`)
+
+    const { confirmed, checked: forceAll } = await askConfirm({
       title: `Delete ${selected.length} item(s)?`,
-      message: `${lines.join('\n')}${permanentWarning}`,
-      confirmLabel: onlyPermanent ? 'Delete forever' : 'Delete',
+      message: lines.join('\n'),
+      confirmLabel: 'Delete',
       danger: true,
+      checkboxLabel: 'Force delete — permanently remove now (cannot be undone)',
     })
     if (!confirmed) return
+
+    // With "Force delete" checked, everything is purged outright. Otherwise the
+    // default two-pass behaviour: live -> soft delete, already-deleted -> purge;
+    // folders are classified by whether they still hold live objects.
+    let softFiles: FileItem[]
+    let forceFiles: FileItem[]
+    let softFolders: FileItem[]
+    let forceFolders: FileItem[]
+    if (forceAll) {
+      softFiles = []
+      forceFiles = files
+      softFolders = []
+      forceFolders = folders
+    } else {
+      softFiles = liveFiles
+      forceFiles = deletedFiles
+      const folderPlans = await Promise.all(
+        folders.map(async (f) => ({ item: f, hasLive: await prefixHasLiveObjects(f.fullPath).catch(() => true) }))
+      )
+      softFolders = folderPlans.filter(p => p.hasLive).map(p => p.item)
+      forceFolders = folderPlans.filter(p => !p.hasLive).map(p => p.item)
+    }
 
     let okCount = 0
     let permanentCount = 0
@@ -1104,7 +1117,7 @@ function App() {
       return
     }
 
-    if (!(await askConfirm({ title: `Restore ${toRestore.length} item(s)?`, confirmLabel: 'Restore' }))) return
+    if (!(await askConfirm({ title: `Restore ${toRestore.length} item(s)?`, confirmLabel: 'Restore' })).confirmed) return
 
     if (!selectedBucket || !client) {
       toast.error('No bucket or client')
@@ -1570,17 +1583,20 @@ function App() {
   const deleteFile = async (item: FileItem) => {
     if (!selectedBucket || !client || !creds) return
 
-    // Already-deleted items are permanently purged; live items are soft-deleted.
-    const force = !!item.isDeleted
-    const confirmed = await askConfirm({
-      title: force ? `Permanently delete ${item.name}?` : `Delete ${item.name}?`,
-      message: force
+    // Already-deleted items are always purged. Live items soft-delete by default,
+    // unless the user ticks "Force delete" to remove them permanently now.
+    const alreadyDeleted = !!item.isDeleted
+    const { confirmed, checked } = await askConfirm({
+      title: alreadyDeleted ? `Permanently delete ${item.name}?` : `Delete ${item.name}?`,
+      message: alreadyDeleted
         ? 'All versions will be removed and this cannot be undone.'
         : 'This item will be moved to deleted (recoverable).',
-      confirmLabel: force ? 'Delete forever' : 'Delete',
+      confirmLabel: alreadyDeleted ? 'Delete forever' : 'Delete',
       danger: true,
+      checkboxLabel: alreadyDeleted ? undefined : 'Force delete — permanently remove now (cannot be undone)',
     })
     if (!confirmed) return
+    const force = alreadyDeleted || checked
 
     try {
       if (force) {
@@ -1607,7 +1623,7 @@ function App() {
       toast.error('Cannot restore: missing version info')
       return
     }
-    if (!(await askConfirm({ title: `Restore ${item.name}?`, confirmLabel: 'Restore' }))) return
+    if (!(await askConfirm({ title: `Restore ${item.name}?`, confirmLabel: 'Restore' })).confirmed) return
 
     try {
       await client.send(
@@ -2773,9 +2789,20 @@ function App() {
               {confirmDialog.title}
             </div>
             {confirmDialog.message && (
-              <div className="p-5 text-sm text-warm-800 whitespace-pre-line">{confirmDialog.message}</div>
+              <div className="px-5 pt-5 text-sm text-warm-800 whitespace-pre-line">{confirmDialog.message}</div>
             )}
-            <div className={`flex gap-2 px-5 pb-5 ${confirmDialog.message ? '' : 'pt-5'}`}>
+            {confirmDialog.checkboxLabel && (
+              <label className="flex items-start gap-2.5 px-5 pt-4 text-sm cursor-pointer select-none text-warm-900">
+                <input
+                  type="checkbox"
+                  checked={confirmDialog.checked}
+                  onChange={(e) => setConfirmDialog((d) => (d ? { ...d, checked: e.target.checked } : d))}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-red-600 cursor-pointer"
+                />
+                <span>{confirmDialog.checkboxLabel}</span>
+              </label>
+            )}
+            <div className="flex gap-2 px-5 pb-5 pt-5">
               <button onClick={() => resolveConfirm(false)} className="btn btn-secondary flex-1">
                 {confirmDialog.cancelLabel}
               </button>
