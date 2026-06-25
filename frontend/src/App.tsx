@@ -20,7 +20,6 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
-import { v4 as uuidv4 } from 'uuid'
 import './App.css'
 
 // Types
@@ -183,22 +182,29 @@ async function listBuckets(client: S3Client): Promise<string[]> {
   return (response.Buckets || []).map((b) => b.Name!).filter(Boolean).sort()
 }
 
-/** Adds a random UUID before the file extension (or at the end if no extension). */
-function makeStorageName(originalName: string): string {
-  const uuid = uuidv4()
-  const lastDot = originalName.lastIndexOf('.')
-  if (lastDot === -1) {
-    return `${originalName}-${uuid}`
-  }
-  const base = originalName.substring(0, lastDot)
-  const ext = originalName.substring(lastDot)
-  return `${base}-${uuid}${ext}`
+// Strictly-increasing UnixNano-style stamp. Browsers only expose millisecond
+// epoch time, so we scale ms -> ns and bump by 1ns whenever multiple files are
+// stamped within the same millisecond. This keeps every key unique (no
+// overwrites) while remaining a monotonic, lexically-sortable numeric value.
+let lastUploadStamp = 0n
+function nextUploadStamp(): bigint {
+  let ts = BigInt(Date.now()) * 1_000_000n
+  if (ts <= lastUploadStamp) ts = lastUploadStamp + 1n
+  lastUploadStamp = ts
+  return ts
 }
 
-/** Removes a trailing -uuid (before extension or at end) for display purposes. */
+/** Prefixes the name with a UnixNano-style timestamp so object keys sort
+ *  lexically by upload time and never overwrite a same-named upload. */
+function makeStorageName(originalName: string): string {
+  return `${nextUploadStamp()}-${originalName}`
+}
+
+/** Removes the leading <unixnano>- timestamp prefix for display purposes. */
 function getDisplayName(storageName: string): string {
-  // Matches -xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx before .ext or at end
-  return storageName.replace(/-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=\.|$)/i, '')
+  // 13+ digits avoids stripping ordinary names that happen to start with a
+  // short number (e.g. "2024-report.pdf"); our prefixes are 19 digits.
+  return storageName.replace(/^\d{13,}-/, '')
 }
 
 function ObjectThumbnail({
