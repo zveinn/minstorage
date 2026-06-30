@@ -746,7 +746,7 @@ function App() {
   const rootItems = useMemo<FileItem[]>(
     () =>
       buckets.map(b => ({
-        name: b === 'shared' ? 'Shared' : b,
+        name: b,
         fullPath: b,
         size: 0,
         isDir: true,
