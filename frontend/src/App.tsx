@@ -16,7 +16,7 @@ import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu, Sun, Moon, Search, Users
+  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -36,6 +36,9 @@ interface FileItem {
   isDir: boolean
   isDeleted?: boolean
   versionId?: string
+  // True when this item represents a whole bucket shown as a folder in the
+  // "root" view (admins with more than two buckets land here on login).
+  isBucket?: boolean
 }
 
 
@@ -441,9 +444,6 @@ function App() {
           } catch {}
 
           if (bucketList.length > 0) {
-            const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
-            const bucketToUse = targetBucket || preferred
-            const prefixToUse = (targetBucket && bucketToUse === targetBucket) ? targetPrefix : ''
             // Set showDeleted and showNotes first so the UI toggle reflects restored state
             if (targetShowDeleted !== showDeleted) {
               setShowDeleted(targetShowDeleted)
@@ -457,13 +457,27 @@ function App() {
             if (targetPageSize !== pageSize) {
               setPageSize(targetPageSize)
             }
-            setSelectedBucket(bucketToUse)
-            setCurrentPrefix(prefixToUse)
             setSearch('')
             setCurrentPage(targetCurrentPage)
             clearSelection()
-            // Load directly with the target prefix and showDeleted
-            loadObjects(bucketToUse, prefixToUse, s3Client, parsed, targetShowDeleted).catch(() => {})
+
+            if (targetBucket) {
+              // Reopen the previously selected bucket at its saved prefix.
+              setSelectedBucket(targetBucket)
+              setCurrentPrefix(targetPrefix)
+              loadObjects(targetBucket, targetPrefix, s3Client, parsed, targetShowDeleted).catch(() => {})
+            } else if (bucketList.length > 2) {
+              // More than two buckets and nothing saved: show the "root" view.
+              setSelectedBucket(null)
+              setCurrentPrefix('')
+              setItems([])
+            } else {
+              // One or two buckets: open the personal bucket directly.
+              const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
+              setSelectedBucket(preferred)
+              setCurrentPrefix('')
+              loadObjects(preferred, '', s3Client, parsed, targetShowDeleted).catch(() => {})
+            }
 
             // (sidebar tree restoration removed)
           }
@@ -530,8 +544,12 @@ function App() {
       setPageSize(100)
       setCurrentPage(1)
 
-      if (bucketList.length > 0) {
-        // Prefer user's personal bucket over "shared"
+      if (bucketList.length > 2) {
+        // More than two buckets: start at the "root" view (buckets shown as
+        // folders) so the user can choose, instead of guessing a home bucket.
+        setItems([])
+      } else if (bucketList.length > 0) {
+        // One or two buckets: open the personal bucket directly (prefer it over "shared").
         const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
         await selectBucket(preferred, s3Client, newCreds)
       } else {
@@ -669,6 +687,21 @@ function App() {
     }
   }
 
+  // Root navigation is only offered when the user has more than two buckets;
+  // with one or two we open the personal bucket directly (see connect/restore).
+  const rootEnabled = buckets.length > 2
+
+  // Leave the selected bucket and show the "root" view (buckets as folders).
+  const goToRoot = () => {
+    setSelectedBucket(null)
+    setCurrentPrefix('')
+    setSearch('')
+    setCurrentPage(1)
+    setItems([])
+    clearSelection()
+    setMobileMenuOpen(false)
+  }
+
   const breadcrumbs = useMemo(() => {
     if (!currentPrefix) return []
     const parts = currentPrefix.split('/').filter(Boolean)
@@ -681,20 +714,32 @@ function App() {
     return crumbs
   }, [currentPrefix])
 
+  // The "root" view lists every bucket as a folder. Clicking one opens it.
+  const rootItems = useMemo<FileItem[]>(
+    () =>
+      buckets.map(b => ({
+        name: b === 'shared' ? 'Shared' : b,
+        fullPath: b,
+        size: 0,
+        isDir: true,
+        isBucket: true,
+      })),
+    [buckets]
+  )
+
   // No custom sorting: object keys are timestamp-prefixed, so MinIO returns
   // them already ordered by upload time. We only apply the search filter and
   // otherwise keep the list exactly as received (folders first, then files).
+  // At root (no bucket selected) we filter over the bucket list instead.
   const filteredItems = useMemo(() => {
+    const base = selectedBucket ? items : rootItems
     const q = search.trim().toLowerCase()
-    if (!q) return items
-    if (searchType === 'name') {
-      return items.filter(i => i.name.toLowerCase().includes(q))
-    }
+    if (!q) return base
     if (searchType === 'note') {
-      return items.filter(i => (notes[i.fullPath] || '').toLowerCase().includes(q))
+      return base.filter(i => (notes[i.fullPath] || '').toLowerCase().includes(q))
     }
-    return items
-  }, [items, search, searchType, notes])
+    return base.filter(i => i.name.toLowerCase().includes(q))
+  }, [items, rootItems, selectedBucket, search, searchType, notes])
 
   // Client-side pagination over the filtered results
   const visibleItems = useMemo(() => {
@@ -1862,33 +1907,37 @@ function App() {
               </button>
             )}
 
-            <label className="btn btn-primary cursor-pointer text-sm py-1.5 px-3 flex items-center gap-1.5">
-              <UploadIcon size={15} />
-              <span>Upload files</span>
-              <input
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files) uploadFiles(e.target.files)
-                  e.target.value = ''
-                }}
-              />
-            </label>
+            {selectedBucket && (
+              <label className="btn btn-primary cursor-pointer text-sm py-1.5 px-3 flex items-center gap-1.5">
+                <UploadIcon size={15} />
+                <span>Upload files</span>
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) uploadFiles(e.target.files)
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+            )}
 
-            <label className="btn btn-secondary cursor-pointer text-sm py-1.5 px-3 flex items-center gap-1.5">
-              <FolderUp size={15} />
-              <span>Upload folder</span>
-              <input
-                type="file"
-                // @ts-ignore - webkit specific
-                webkitdirectory=""
-                directory=""
-                multiple
-                className="hidden"
-                onChange={handleFolderUpload}
-              />
-            </label>
+            {selectedBucket && (
+              <label className="btn btn-secondary cursor-pointer text-sm py-1.5 px-3 flex items-center gap-1.5">
+                <FolderUp size={15} />
+                <span>Upload folder</span>
+                <input
+                  type="file"
+                  // @ts-ignore - webkit specific
+                  webkitdirectory=""
+                  directory=""
+                  multiple
+                  className="hidden"
+                  onChange={handleFolderUpload}
+                />
+              </label>
+            )}
 
             <button onClick={disconnect} className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 text-red-600" title="Disconnect">
               <LogOut size={15} />
@@ -1965,17 +2014,21 @@ function App() {
                 </button>
               )}
 
-              <label className="menu-item cursor-pointer">
-                <UploadIcon size={17} /> Upload files
-                {/* @ts-ignore */}
-                <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) { uploadFiles(e.target.files); setMobileMenuOpen(false); } e.target.value = ''; }} />
-              </label>
+              {selectedBucket && (
+                <label className="menu-item cursor-pointer">
+                  <UploadIcon size={17} /> Upload files
+                  {/* @ts-ignore */}
+                  <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) { uploadFiles(e.target.files); setMobileMenuOpen(false); } e.target.value = ''; }} />
+                </label>
+              )}
 
-              <label className="menu-item cursor-pointer">
-                <FolderUp size={17} /> Upload folder
-                {/* @ts-ignore */}
-                <input type="file" webkitdirectory="" directory="" multiple className="hidden" onChange={(e) => { handleFolderUpload(e); setMobileMenuOpen(false); }} />
-              </label>
+              {selectedBucket && (
+                <label className="menu-item cursor-pointer">
+                  <FolderUp size={17} /> Upload folder
+                  {/* @ts-ignore */}
+                  <input type="file" webkitdirectory="" directory="" multiple className="hidden" onChange={(e) => { handleFolderUpload(e); setMobileMenuOpen(false); }} />
+                </label>
+              )}
 
               <div className="my-1 border-t border-line" />
 
@@ -2000,11 +2053,11 @@ function App() {
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
           >
-            {!selectedBucket ? (
+            {!selectedBucket && buckets.length === 0 ? (
               <div className="h-[60vh] flex items-center justify-center text-center">
                 <div>
                   <div className="text-beige-500 mb-2"><Folder size={48} className="mx-auto" /></div>
-                  <div className="text-lg font-medium">Select a bucket to begin</div>
+                  <div className="text-lg font-medium">No buckets available</div>
                 </div>
               </div>
             ) : (
@@ -2042,15 +2095,31 @@ function App() {
                   </div>
                 )}
 
-                {/* Breadcrumb path (above the search toolbar) — bucket name is the "home" crumb */}
+                {/* Breadcrumb path (above the search toolbar). With more than two
+                    buckets, "root" is the home crumb and lists buckets as folders;
+                    otherwise the bucket name is the home crumb. */}
                 <div className="mb-3 flex items-center gap-1 min-w-0 overflow-x-auto whitespace-nowrap text-xs sm:text-sm">
-                  <button
-                    onClick={goHome}
-                    className="font-medium text-fg hover:text-accent shrink-0 truncate max-w-[10rem]"
-                    title="Go to root"
-                  >
-                    {selectedBucket === 'shared' ? 'Shared' : selectedBucket}
-                  </button>
+                  {rootEnabled && (
+                    <button
+                      onClick={goToRoot}
+                      className={`font-medium shrink-0 ${selectedBucket ? 'text-muted hover:text-fg' : 'text-fg hover:text-accent'}`}
+                      title="All buckets"
+                    >
+                      root
+                    </button>
+                  )}
+                  {selectedBucket && (
+                    <span className="flex items-center gap-1 min-w-0">
+                      {rootEnabled && <ChevronRight size={12} className="text-muted shrink-0" />}
+                      <button
+                        onClick={goHome}
+                        className={`font-medium hover:text-accent shrink-0 truncate max-w-[10rem] ${rootEnabled ? 'text-muted hover:text-fg' : 'text-fg'}`}
+                        title="Go to bucket root"
+                      >
+                        {selectedBucket === 'shared' ? 'Shared' : selectedBucket}
+                      </button>
+                    </span>
+                  )}
                   {breadcrumbs.map((crumb, idx) => (
                     <span key={idx} className="flex items-center gap-0.5 text-muted shrink-0">
                       <ChevronRight size={12} />
@@ -2239,39 +2308,53 @@ function App() {
                       >
                         {item.isDir ? (
                           <>
-                            {/* Select checkbox — hidden unless selected/in select mode or hovered */}
-                            <div
-                              className={`absolute top-2 left-2 z-30 transition-opacity ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
-                              onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
-                            >
+                            {/* Select checkbox — hidden unless selected/in select mode or hovered.
+                                Buckets (root view) aren't selectable. */}
+                            {!item.isBucket && (
                               <div
-                                className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
-                                  selectedItems.has(item.fullPath)
-                                    ? 'bg-blue-500 border-blue-500'
-                                    : 'bg-surface/80 border-gray-300 hover:border-blue-400'
-                                }`}
+                                className={`absolute top-2 left-2 z-30 transition-opacity ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
+                                onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
                               >
-                                {selectedItems.has(item.fullPath) && <Check size={10} className="text-white" />}
+                                <div
+                                  className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                                    selectedItems.has(item.fullPath)
+                                      ? 'bg-blue-500 border-blue-500'
+                                      : 'bg-surface/80 border-gray-300 hover:border-blue-400'
+                                  }`}
+                                >
+                                  {selectedItems.has(item.fullPath) && <Check size={10} className="text-white" />}
+                                </div>
                               </div>
-                            </div>
+                            )}
                             <button
                               onClick={() => {
                                 if (longPressFired.current) { longPressFired.current = false; return }
-                                if (isInSelectMode) { toggleSelect(item.fullPath) } else { navigateTo(item.fullPath) }
+                                if (item.isBucket) { selectBucket(item.fullPath) }
+                                else if (isInSelectMode) { toggleSelect(item.fullPath) }
+                                else { navigateTo(item.fullPath) }
                               }}
-                              onTouchStart={() => startLongPress(item.fullPath)}
+                              onTouchStart={() => { if (!item.isBucket) startLongPress(item.fullPath) }}
                               onTouchEnd={cancelLongPress}
                               onTouchMove={cancelLongPress}
                               onTouchCancel={cancelLongPress}
                               className="flex-1 p-2 sm:p-3 flex flex-col select-none [-webkit-touch-callout:none]"
                             >
                               <div className="thumbnail w-full h-32 sm:h-40 flex items-center justify-center bg-beige-100 group-hover:bg-beige-200 transition-colors">
-                                <Folder size={36} className="sm:hidden text-beige-600" />
-                                <Folder size={46} className="hidden sm:block text-beige-600" />
+                                {item.isBucket ? (
+                                  <>
+                                    <Database size={36} className="sm:hidden text-beige-600" />
+                                    <Database size={46} className="hidden sm:block text-beige-600" />
+                                  </>
+                                ) : (
+                                  <>
+                                    <Folder size={36} className="sm:hidden text-beige-600" />
+                                    <Folder size={46} className="hidden sm:block text-beige-600" />
+                                  </>
+                                )}
                               </div>
                               <div className="pt-3 px-1">
                                 <div className="font-medium text-sm truncate">{item.name}</div>
-                                <div className="text-xs text-beige-600">Folder</div>
+                                <div className="text-xs text-beige-600">{item.isBucket ? 'Bucket' : 'Folder'}</div>
                               </div>
                             </button>
                           </>
@@ -2317,7 +2400,7 @@ function App() {
                                     <Trash2 size={32} className="sm:hidden text-red-400" />
                                     <Trash2 size={42} className="hidden sm:block text-red-400" />
                                   </div>
-                                ) : isImage(item.name) && creds ? (
+                                ) : isImage(item.name) && creds && selectedBucket ? (
                                   <ObjectThumbnail
                                     bucket={selectedBucket}
                                     objectName={item.fullPath}
@@ -2419,7 +2502,7 @@ function App() {
                           className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1 sm:py-1.5 group text-sm hover:bg-beige-50 transition-colors select-none [-webkit-touch-callout:none] ${item.isDeleted ? 'opacity-60' : ''} ${isSelected ? 'bg-blue-50/40' : ''}`}
                           data-fullpath={item.fullPath}
                           data-isdir={item.isDir ? 'true' : 'false'}
-                          onTouchStart={() => startLongPress(item.fullPath)}
+                          onTouchStart={() => { if (!item.isBucket) startLongPress(item.fullPath) }}
                           onTouchEnd={cancelLongPress}
                           onTouchMove={cancelLongPress}
                           onTouchCancel={cancelLongPress}
@@ -2435,17 +2518,22 @@ function App() {
                           }}
                           onMouseLeave={() => setTooltip(null)}
                         >
-                          {/* Select checkbox — hidden unless selected/in select mode or hovered */}
-                          <div
-                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-surface border-gray-300 hover:border-blue-400'} ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
-                            onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
-                          >
-                            {isSelected && <Check size={10} className="text-white" />}
-                          </div>
+                          {/* Select checkbox — hidden unless selected/in select mode or hovered.
+                              Buckets (root view) aren't selectable. */}
+                          {item.isBucket ? (
+                            <div className="w-4 h-4 shrink-0" />
+                          ) : (
+                            <div
+                              className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-surface border-gray-300 hover:border-blue-400'} ${isInSelectMode ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'}`}
+                              onClick={(e) => { e.stopPropagation(); toggleSelect(item.fullPath) }}
+                            >
+                              {isSelected && <Check size={10} className="text-white" />}
+                            </div>
+                          )}
 
                           {/* Icon (no preview) */}
                           <div className="shrink-0 text-beige-600">
-                            {item.isDir ? <Folder size={16} /> : <File size={16} />}
+                            {item.isBucket ? <Database size={16} /> : item.isDir ? <Folder size={16} /> : <File size={16} />}
                           </div>
 
                           {/* Name */}
@@ -2453,7 +2541,9 @@ function App() {
                             className={`flex-1 min-w-0 truncate font-medium cursor-pointer hover:underline ${item.isDeleted ? 'line-through text-red-400' : 'text-warm-900'}`}
                             onClick={() => {
                               if (longPressFired.current) { longPressFired.current = false; return }
-                              if (isInSelectMode) {
+                              if (item.isBucket) {
+                                selectBucket(item.fullPath)
+                              } else if (isInSelectMode) {
                                 toggleSelect(item.fullPath)
                               } else if (item.isDir) {
                                 navigateTo(item.fullPath)
