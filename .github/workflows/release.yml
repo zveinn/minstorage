@@ -9,10 +9,10 @@ permissions:
   contents: write
 
 jobs:
-  # 1. Build the React frontend and embed it into backend/static.
-  #    The output is uploaded as an artifact so every backend build reuses
-  #    the exact same frontend bundle.
-  frontend:
+  # Single job: build the frontend, embed it, cross-compile every backend
+  # binary, then publish the release once. No matrix, no artifact hand-off,
+  # and no parallel jobs racing to create the same release.
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,42 +24,11 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
-
       - name: Build frontend (copies into backend/static)
         working-directory: frontend
-        run: npm run build
-
-      - name: Upload embedded frontend
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-static
-          path: backend/static
-          retention-days: 1
-
-  # 2. Cross-compile the Go backend (with the embedded frontend) for each
-  #    target platform and attach the binaries to the GitHub release.
-  backend:
-    needs: frontend
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
-    steps:
-      - uses: actions/checkout@v4
+        run: |
+          npm ci
+          npm run build
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -67,26 +36,22 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Download embedded frontend
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-static
-          path: backend/static
-
-      - name: Build backend
+      - name: Cross-compile backend binaries
         working-directory: backend
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          BIN=minstorage-${{ matrix.goos }}-${{ matrix.goarch }}
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            BIN="$BIN.exe"
-          fi
-          go build -trimpath -ldflags "-s -w" -o "../dist/$BIN" .
+          mkdir -p ../dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            export GOOS="${target%/*}" GOARCH="${target#*/}"
+            BIN="minstorage-$GOOS-$GOARCH"
+            [ "$GOOS" = "windows" ] && BIN="$BIN.exe"
+            echo "Building $BIN"
+            go build -trimpath -ldflags "-s -w" -o "../dist/$BIN" .
+          done
 
-      - name: Upload binary to release
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/minstorage-${{ matrix.goos }}-${{ matrix.goarch }}*
+          files: dist/minstorage-*
+          overwrite_files: true
