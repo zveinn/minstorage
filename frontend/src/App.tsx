@@ -390,6 +390,11 @@ function App() {
   const STORAGE_KEY = 'FAMILY_STORAGE_CREDS'
   const STORAGE_STATE_KEY = 'FAMILY_STORAGE_STATE'
 
+  // Becomes true once login/restore has settled on a location. Until then we
+  // must NOT persist UI state, otherwise the brief "logged-in but no bucket
+  // yet" window on mount would clobber the saved state before restore reads it.
+  const sessionReadyRef = useRef(false)
+
   // Restore credentials from sessionStorage on mount
   useEffect(() => {
     const stored = sessionStorage.getItem(STORAGE_KEY)
@@ -409,6 +414,7 @@ function App() {
 
           // Load persisted UI state
           let targetBucket: string | null = null
+          let savedWasRoot = false
           let targetPrefix = ''
           let targetShowDeleted = false
           let targetShowNotes = false
@@ -421,6 +427,9 @@ function App() {
               const parsedState = JSON.parse(saved)
               if (parsedState.selectedBucket && bucketList.includes(parsedState.selectedBucket)) {
                 targetBucket = parsedState.selectedBucket
+              } else if (parsedState.selectedBucket === null) {
+                // The user was at the "root" view; keep them there on refresh.
+                savedWasRoot = true
               }
               if (typeof parsedState.currentPrefix === 'string') {
                 targetPrefix = parsedState.currentPrefix
@@ -460,23 +469,32 @@ function App() {
             setSearch('')
             setCurrentPage(targetCurrentPage)
             clearSelection()
+            // From here on it's safe to persist UI state again.
+            sessionReadyRef.current = true
 
             if (targetBucket) {
               // Reopen the previously selected bucket at its saved prefix.
               setSelectedBucket(targetBucket)
               setCurrentPrefix(targetPrefix)
               loadObjects(targetBucket, targetPrefix, s3Client, parsed, targetShowDeleted).catch(() => {})
-            } else if (bucketList.length > 2) {
-              // More than two buckets and nothing saved: show the "root" view.
+            } else if (savedWasRoot) {
+              // Saved location was "root" — restore it instead of a bucket.
               setSelectedBucket(null)
               setCurrentPrefix('')
               setItems([])
             } else {
-              // One or two buckets: open the personal bucket directly.
-              const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
-              setSelectedBucket(preferred)
-              setCurrentPrefix('')
-              loadObjects(preferred, '', s3Client, parsed, targetShowDeleted).catch(() => {})
+              // No usable saved state: default to the user's personal bucket
+              // (named like their login) if it exists, otherwise the "root" view.
+              const home = bucketList.find(b => b === parsed.accessKey)
+              if (home) {
+                setSelectedBucket(home)
+                setCurrentPrefix('')
+                loadObjects(home, '', s3Client, parsed, targetShowDeleted).catch(() => {})
+              } else {
+                setSelectedBucket(null)
+                setCurrentPrefix('')
+                setItems([])
+              }
             }
 
             // (sidebar tree restoration removed)
@@ -497,11 +515,12 @@ function App() {
     }
   }, []) // run only once on mount
 
-  // Persist UI state (bucket/dir/show-deleted) so refresh keeps the same view
-  // Only persist if we actually have a selected bucket (avoid clobbering saved state
-  // during the brief moment after login/restore when selectedBucket is still unset)
+  // Persist UI state (bucket/dir/show-deleted) so refresh keeps the same view.
+  // selectedBucket is null at the "root" view and we persist that too, so a
+  // refresh from root stays at root. The sessionReadyRef gate prevents the
+  // mount-time "no bucket yet" window from clobbering the saved state.
   useEffect(() => {
-    if (isLoggedIn && selectedBucket) {
+    if (isLoggedIn && sessionReadyRef.current) {
       const state = {
         selectedBucket,
         currentPrefix,
@@ -543,15 +562,15 @@ function App() {
       setViewMode('grid')
       setPageSize(100)
       setCurrentPage(1)
+      sessionReadyRef.current = true
 
-      if (bucketList.length > 2) {
-        // More than two buckets: start at the "root" view (buckets shown as
-        // folders) so the user can choose, instead of guessing a home bucket.
-        setItems([])
+      // Default location: the user's personal bucket (named like their login)
+      // if it exists, otherwise the "root" view listing all buckets as folders.
+      const home = bucketList.find(b => b === newCreds.accessKey)
+      if (home) {
+        await selectBucket(home, s3Client, newCreds)
       } else if (bucketList.length > 0) {
-        // One or two buckets: open the personal bucket directly (prefer it over "shared").
-        const preferred = bucketList.find(b => b !== 'shared') || bucketList[0]
-        await selectBucket(preferred, s3Client, newCreds)
+        setItems([]) // selectedBucket stays null -> root view
       } else {
         toast('Connected. No buckets found.')
       }
@@ -567,6 +586,7 @@ function App() {
   }
 
   const disconnect = () => {
+    sessionReadyRef.current = false
     sessionStorage.removeItem(STORAGE_KEY)
     sessionStorage.removeItem(STORAGE_STATE_KEY)
     setCreds(null)
@@ -687,9 +707,17 @@ function App() {
     }
   }
 
-  // Root navigation is only offered when the user has more than two buckets;
-  // with one or two we open the personal bucket directly (see connect/restore).
-  const rootEnabled = buckets.length > 2
+  // The user's personal bucket is the one named exactly like their login (the
+  // access key). It's the default landing spot when present; otherwise we land
+  // at "root" (all buckets listed as folders).
+  const homeBucket = useMemo(
+    () => (creds ? buckets.find(b => b === creds.accessKey) ?? null : null),
+    [creds, buckets]
+  )
+
+  // Offer "root" navigation whenever there is no personal bucket to call home,
+  // or there are enough buckets that browsing them as folders is useful.
+  const rootEnabled = !homeBucket || buckets.length > 2
 
   // Leave the selected bucket and show the "root" view (buckets as folders).
   const goToRoot = () => {
@@ -1882,7 +1910,6 @@ function App() {
 
             {/* Switch between personal and shared bucket */}
             {(() => {
-              const homeBucket = buckets.find(b => b !== 'shared')
               const onShared = selectedBucket === 'shared'
               if (onShared && homeBucket) {
                 return (
@@ -1989,7 +2016,6 @@ function App() {
               )}
 
               {(() => {
-                const homeBucket = buckets.find(b => b !== 'shared')
                 const onShared = selectedBucket === 'shared'
                 if (onShared && homeBucket) {
                   return (
