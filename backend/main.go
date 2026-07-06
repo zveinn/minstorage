@@ -52,16 +52,14 @@ var (
 	signupMu     sync.Mutex
 )
 
+// getSignupTokensPath returns the signup-token store location. It is always
+// ./signup-tokens.json relative to the working directory, so the `signup`
+// subcommand and the running server always agree on a single file — regardless
+// of PREVIEW_CACHE_DIR or wherever the previews cache lives. (These are
+// intentionally decoupled: they used to derive from cacheDir, which differed
+// between the two processes and left generated tokens unredeemable.)
 func getSignupTokensPath() string {
-	dir := cacheDir
-	if dir == "" {
-		dir = os.Getenv("PREVIEW_CACHE_DIR")
-		if dir == "" {
-			dir = defaultCacheDir
-		}
-	}
-	_ = os.MkdirAll(dir, 0755)
-	return filepath.Join(dir, "signup-tokens.json")
+	return "signup-tokens.json"
 }
 
 func loadSignupTokens() {
