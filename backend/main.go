@@ -808,6 +808,16 @@ func runSignupCommand() {
 		base = "127.0.0.1:7000"
 	}
 
+	// resolveSignupHostPort() strips the scheme, so pick it back up from the raw
+	// input: an explicit https:// wins; otherwise fall back to the MinIO TLS
+	// setting when the host/port was inherited from --minio.
+	scheme := "http"
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(signupVal)), "https://") {
+		scheme = "https"
+	} else if signupVal == "" && resolveMinioTLS() {
+		scheme = "https"
+	}
+
 	token := uuid.NewString()
 	expiry := time.Now().Add(24 * time.Hour)
 
@@ -818,7 +828,7 @@ func runSignupCommand() {
 	saveSignupTokens()
 	log.Printf("[signup] stored token %s (valid 24h) in %s", token, getSignupTokensPath())
 
-	signupURL := fmt.Sprintf("http://%s/signup/%s", base, token)
+	signupURL := fmt.Sprintf("%s://%s/signup/%s", scheme, base, token)
 
 	fmt.Println("One-time signup URL created (valid once):")
 	fmt.Println(signupURL)
