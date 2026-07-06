@@ -881,9 +881,13 @@ func createUserAndBucket(username, password string) error {
 	if accessKey == "" || secretKey == "" {
 		return fmt.Errorf("minio admin credentials not configured (use --user/--pass)")
 	}
-	useSSL := false // default for local setups; extend with env/flag if needed
+	// Match the TLS setting the rest of the backend uses (https:// scheme on
+	// --minio, --minio-tls, or MINIO_TLS). Hardcoding this to false made the
+	// signup command speak HTTP to an HTTPS MinIO ("Client sent an HTTP request
+	// to an HTTPS server").
+	useSSL := resolveMinioTLS()
 
-	log.Printf("[signup] creating clients for endpoint=%s user=%q", endpoint, username)
+	log.Printf("[signup] creating clients for endpoint=%s user=%q tls=%v", endpoint, username, useSSL)
 
 	minioClient, err := newMinioClient(endpoint, accessKey, secretKey, useSSL)
 	if err != nil {
