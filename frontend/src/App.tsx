@@ -17,7 +17,7 @@ import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database, Pencil
+  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database, Pencil, EllipsisVertical
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -307,6 +307,15 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1)
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
+  // Per-item actions dropdown, opened from the ⋮ button on a file/folder.
+  // Rendered top-level with fixed positioning so overflow-hidden containers
+  // (cards, the list wrapper) can't clip it.
+  const [actionMenu, setActionMenu] = useState<{
+    item: FileItem
+    x: number
+    y: number
+    openUp: boolean
+  } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
     name: string
     percent: number
@@ -948,6 +957,20 @@ function App() {
       clearTimeout(longPressTimer.current)
       longPressTimer.current = null
     }
+  }
+
+  const ACTION_MENU_WIDTH = 176 // matches w-44 on the dropdown
+  const ACTION_MENU_EST_HEIGHT = 200 // tallest variant (live file, 5 entries)
+  const openActionMenu = (e: React.MouseEvent, item: FileItem) => {
+    e.stopPropagation()
+    const rect = e.currentTarget.getBoundingClientRect()
+    const openUp = rect.bottom + ACTION_MENU_EST_HEIGHT > window.innerHeight
+    setActionMenu({
+      item,
+      x: Math.max(8, rect.right - ACTION_MENU_WIDTH),
+      y: openUp ? rect.top - 4 : rect.bottom + 4,
+      openUp,
+    })
   }
 
   const downloadSelectedItems = async () => {
@@ -2552,15 +2575,15 @@ function App() {
                                 </div>
                               </div>
                             )}
-                            {/* Folder actions - always on mobile, hover on desktop. Buckets can't be renamed. */}
+                            {/* Actions menu trigger - always on mobile, hover on desktop. Buckets have no actions. */}
                             {!item.isBucket && (
-                              <div className="absolute top-2 right-2 flex gap-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-30">
+                              <div className="absolute top-2 right-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-30">
                                 <button
-                                  onClick={(e) => { e.stopPropagation(); renameFolder(item); }}
+                                  onClick={(e) => openActionMenu(e, item)}
                                   className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                  title="Rename folder"
+                                  title="Actions"
                                 >
-                                  <Pencil size={15} />
+                                  <EllipsisVertical size={15} />
                                 </button>
                               </div>
                             )}
@@ -2598,7 +2621,8 @@ function App() {
                           </>
                         ) : (
                           <>
-                            <div className="relative overflow-hidden">
+                            {/* rounded-t-[inherit] clips the flush thumbnail to the card's 18px radius */}
+                            <div className="relative overflow-hidden rounded-t-[inherit]">
                               <div
                                 className="cursor-pointer select-none [-webkit-touch-callout:none]"
                                 onTouchStart={() => startLongPress(item.fullPath)}
@@ -2652,54 +2676,14 @@ function App() {
                                 )}
                               </div>
 
-                              {/* Action buttons - always on mobile, hover on desktop */}
-                              <div className="absolute top-2 right-2 flex gap-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-10">
-                                {item.isDeleted ? (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); restoreFile(item); }}
-                                    className="bg-surface/90 hover:bg-green-50 text-green-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                    title="Restore"
-                                  >
-                                    <RotateCcw size={15} />
-                                  </button>
-                                ) : (
-                                  <>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); downloadFile(item); }}
-                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                      title="Download"
-                                    >
-                                      <Download size={15} />
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); openShareModal(item); }}
-                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                      title="Get shareable download link"
-                                    >
-                                      <Link size={15} />
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); openNoteModal(item); }}
-                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                      title="Add/Edit note"
-                                    >
-                                      <MessageSquare size={15} />
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); renameFile(item); }}
-                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                      title="Rename"
-                                    >
-                                      <Pencil size={15} />
-                                    </button>
-                                  </>
-                                )}
+                              {/* Actions menu trigger - always on mobile, hover on desktop */}
+                              <div className="absolute top-2 right-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-10">
                                 <button
-                                  onClick={(e) => { e.stopPropagation(); deleteFile(item); }}
-                                  className="bg-surface/90 hover:bg-red-50 text-red-600 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
-                                  title={item.isDeleted ? "Permanently delete" : "Delete"}
+                                  onClick={(e) => openActionMenu(e, item)}
+                                  className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                  title="Actions"
                                 >
-                                  <Trash2 size={15} />
+                                  <EllipsisVertical size={15} />
                                 </button>
                               </div>
                             </div>
@@ -2818,37 +2802,11 @@ function App() {
                             {item.lastModified ? format(item.lastModified, 'MMM d') : '—'}
                           </div>
 
-                          {/* Minimal actions (always on mobile, hover on desktop) */}
-                          {!item.isDir ? (
-                            <div className="flex gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0">
-                              {item.isDeleted ? (
-                                <button onClick={(e) => { e.stopPropagation(); restoreFile(item) }} className="p-1 rounded hover:bg-green-100 text-green-600" title="Restore">
-                                  <RotateCcw size={14} />
-                                </button>
-                              ) : (
-                                <>
-                                  <button onClick={(e) => { e.stopPropagation(); downloadFile(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Download">
-                                    <Download size={14} />
-                                  </button>
-                                  <button onClick={(e) => { e.stopPropagation(); openShareModal(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Share">
-                                    <Link size={14} />
-                                  </button>
-                                  <button onClick={(e) => { e.stopPropagation(); openNoteModal(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Note">
-                                    <MessageSquare size={14} />
-                                  </button>
-                                  <button onClick={(e) => { e.stopPropagation(); renameFile(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Rename">
-                                    <Pencil size={14} />
-                                  </button>
-                                </>
-                              )}
-                              <button onClick={(e) => { e.stopPropagation(); deleteFile(item) }} className="p-1 rounded hover:bg-red-100 text-red-600" title="Delete">
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          ) : !item.isBucket ? (
-                            <div className="flex gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0">
-                              <button onClick={(e) => { e.stopPropagation(); renameFolder(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Rename">
-                                <Pencil size={14} />
+                          {/* Actions menu trigger (always on mobile, hover on desktop). Buckets have no actions. */}
+                          {!item.isBucket ? (
+                            <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0">
+                              <button onClick={(e) => openActionMenu(e, item)} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Actions">
+                                <EllipsisVertical size={14} />
                               </button>
                             </div>
                           ) : (
@@ -3197,6 +3155,59 @@ function App() {
           </form>
         </div>
       )}
+
+      {/* Item actions dropdown (opened from the ⋮ button on files/folders) */}
+      {actionMenu && (() => {
+        const mi = actionMenu.item
+        const runAction = (fn: () => void) => { setActionMenu(null); fn() }
+        const entryCls = 'w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-beige-100 transition-colors'
+        return (
+          <>
+            <div className="fixed inset-0 z-[90]" onClick={() => setActionMenu(null)} />
+            <div
+              className="fixed z-[95] w-44 bg-surface border border-beige-200 rounded-xl shadow-lg py-1 overflow-hidden"
+              style={{
+                left: actionMenu.x,
+                top: actionMenu.y,
+                transform: actionMenu.openUp ? 'translateY(-100%)' : undefined,
+              }}
+            >
+              {mi.isDir ? (
+                <button className={entryCls} onClick={() => runAction(() => renameFolder(mi))}>
+                  <Pencil size={14} className="text-beige-600" /> Rename
+                </button>
+              ) : mi.isDeleted ? (
+                <>
+                  <button className={entryCls} onClick={() => runAction(() => restoreFile(mi))}>
+                    <RotateCcw size={14} className="text-green-600" /> Restore
+                  </button>
+                  <button className={`${entryCls} text-red-600`} onClick={() => runAction(() => deleteFile(mi))}>
+                    <Trash2 size={14} /> Delete forever
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className={entryCls} onClick={() => runAction(() => downloadFile(mi))}>
+                    <Download size={14} className="text-beige-600" /> Download
+                  </button>
+                  <button className={entryCls} onClick={() => runAction(() => openShareModal(mi))}>
+                    <Link size={14} className="text-beige-600" /> Share link
+                  </button>
+                  <button className={entryCls} onClick={() => runAction(() => openNoteModal(mi))}>
+                    <MessageSquare size={14} className="text-beige-600" /> Note
+                  </button>
+                  <button className={entryCls} onClick={() => runAction(() => renameFile(mi))}>
+                    <Pencil size={14} className="text-beige-600" /> Rename
+                  </button>
+                  <button className={`${entryCls} text-red-600`} onClick={() => runAction(() => deleteFile(mi))}>
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </>
+              )}
+            </div>
+          </>
+        )
+      })()}
 
       {/* Cursor-following tooltip for notes */}
       {tooltip && !showNotes && (
