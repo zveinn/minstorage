@@ -5,6 +5,7 @@ import {
   ListObjectsV2Command,
   ListObjectVersionsCommand,
   DeleteObjectCommand,
+  CopyObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   GetObjectTaggingCommand,
@@ -16,7 +17,7 @@ import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database
+  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database, Pencil
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -314,6 +315,11 @@ function App() {
     total: number
   } | null>(null)
   const [currentDelete, setCurrentDelete] = useState<{
+    name: string
+    done: number
+    total: number
+  } | null>(null)
+  const [currentRename, setCurrentRename] = useState<{
     name: string
     done: number
     total: number
@@ -1035,6 +1041,27 @@ function App() {
     }
   }
 
+  // Server-side copy within the current bucket. CopySource wants
+  // "<bucket>/<key>" with each path segment URL-encoded (keys can contain
+  // spaces/unicode, but slashes must stay as separators).
+  const copyObject = async (fromKey: string, toKey: string) => {
+    if (!selectedBucket || !client) throw new Error('No bucket or client')
+    const source = [selectedBucket, ...fromKey.split('/')].map(encodeURIComponent).join('/')
+    await client.send(
+      new CopyObjectCommand({ Bucket: selectedBucket, CopySource: source, Key: toKey })
+    )
+  }
+
+  // True when an object with exactly this key exists. The key itself sorts
+  // first among keys sharing it as a prefix, so MaxKeys=1 is enough.
+  const keyExists = async (key: string): Promise<boolean> => {
+    if (!selectedBucket || !client) return false
+    const resp: any = await client.send(
+      new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: key, MaxKeys: 1 })
+    )
+    return (resp.Contents || []).some((o: any) => o.Key === key)
+  }
+
   // A folder counts as "soft-deleted" once it has no live objects left under it
   // (everything is a delete marker). We detect that by asking for a single live
   // object: empty means the folder is in the soft-deleted state.
@@ -1690,6 +1717,163 @@ function App() {
     }
   }
 
+  // S3 has no rename: copy to the new key, then soft-delete the old one (the
+  // original stays recoverable under its old name in the deleted view).
+  const renameFile = async (item: FileItem) => {
+    if (!selectedBucket || !client || item.isDir || item.isBucket || item.isDeleted) return
+
+    const input = await askPrompt({
+      title: `Rename ${item.name}`,
+      label: 'New name',
+      defaultValue: item.name,
+      confirmLabel: 'Rename',
+    })
+    if (input === null) return
+    const newName = input.trim()
+    if (!newName || newName === item.name) return
+    if (newName.includes('/')) {
+      toast.error('Name cannot contain /')
+      return
+    }
+
+    const slashIdx = item.fullPath.lastIndexOf('/')
+    const dir = slashIdx >= 0 ? item.fullPath.slice(0, slashIdx + 1) : ''
+    const baseName = item.fullPath.slice(dir.length)
+    // Keep the original upload-time stamp so the key stays unique and the
+    // listing keeps its chronological order; only the display name changes.
+    const stamp = baseName.match(/^\d{13,}-/)?.[0] ?? ''
+    const newKey = dir + stamp + newName
+    if (newKey === item.fullPath) return
+
+    try {
+      // Unstamped keys aren't guaranteed unique, so guard against overwriting.
+      if (!stamp && (await keyExists(newKey))) {
+        toast.error(`"${newName}" already exists`)
+        return
+      }
+      await copyObject(item.fullPath, newKey)
+      await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: item.fullPath }))
+      toast.success(`Renamed to ${newName}`)
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+    } catch (err: any) {
+      toast.error('Rename failed: ' + (err.message || ''))
+    }
+  }
+
+  // Folders are just key prefixes, so renaming one means copying every object
+  // under the old prefix to the new one, then purging the originals (all
+  // versions — see below). All copies happen before any delete: a mid-way
+  // failure can leave duplicates, never data loss.
+  const renameFolder = async (item: FileItem) => {
+    if (!selectedBucket || !client || !item.isDir || item.isBucket) return
+
+    const input = await askPrompt({
+      title: `Rename ${item.name}`,
+      label: 'New name',
+      defaultValue: item.name,
+      confirmLabel: 'Rename',
+    })
+    if (input === null) return
+    const newName = input.trim()
+    if (!newName || newName === item.name) return
+    if (newName.includes('/')) {
+      toast.error('Folder name cannot contain /')
+      return
+    }
+
+    const oldPrefix = item.fullPath // always ends in '/'
+    const newPrefix = oldPrefix.slice(0, oldPrefix.length - item.name.length - 1) + newName + '/'
+
+    try {
+      const existing: any = await client.send(
+        new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: newPrefix, MaxKeys: 1 })
+      )
+      if ((existing.Contents || []).length > 0) {
+        toast.error(`A folder named "${newName}" already exists`)
+        return
+      }
+
+      const keys: string[] = []
+      let continuationToken: string | undefined
+      let isTruncated = true
+      while (isTruncated) {
+        const page: any = await client.send(
+          new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: oldPrefix, ContinuationToken: continuationToken })
+        )
+        for (const obj of (page.Contents || [])) {
+          if (obj.Key) keys.push(obj.Key)
+        }
+        isTruncated = !!page.IsTruncated
+        continuationToken = page.NextContinuationToken
+      }
+      if (keys.length === 0) {
+        toast.error('Folder is empty or no longer exists')
+        loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+        return
+      }
+
+      const label = `${item.name}/ → ${newName}/`
+      // Each key is one copy + one delete.
+      const total = keys.length * 2
+      let done = 0
+      setCurrentRename({ name: label, done, total })
+
+      try {
+        for (const key of keys) {
+          await copyObject(key, newPrefix + key.slice(oldPrefix.length))
+          done++
+          setCurrentRename({ name: label, done, total })
+        }
+      } catch (err: any) {
+        toast.error(`Rename failed while copying (nothing was deleted): ${err.message || ''}`)
+        return
+      }
+
+      // Purge every version + delete marker under the old prefix. A soft
+      // delete is not enough here: MinIO keeps listing a prefix that holds
+      // only delete markers, so the old folder would linger as a ghost.
+      let deleteErrors = 0
+      const seenKeys = new Set<string>()
+      let keyMarker: string | undefined
+      let versionIdMarker: string | undefined
+      let truncated = true
+      while (truncated) {
+        const page: any = await client.send(
+          new ListObjectVersionsCommand({ Bucket: selectedBucket, Prefix: oldPrefix, KeyMarker: keyMarker, VersionIdMarker: versionIdMarker })
+        )
+        const versions = [...(page.Versions || []), ...(page.DeleteMarkers || [])].filter((v: any) => v.Key && v.VersionId)
+        for (const v of versions) {
+          try {
+            await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: v.Key, VersionId: v.VersionId }))
+          } catch {
+            deleteErrors++
+          }
+          // Progress counts keys, not versions — a key may have many versions.
+          if (!seenKeys.has(v.Key)) {
+            seenKeys.add(v.Key)
+            done++
+            setCurrentRename({ name: label, done: Math.min(done, total), total })
+          }
+        }
+        truncated = !!page.IsTruncated
+        keyMarker = page.NextKeyMarker
+        versionIdMarker = page.NextVersionIdMarker
+      }
+      setCurrentRename({ name: label, done: total, total })
+
+      if (deleteErrors > 0) {
+        toast.error(`Renamed, but ${deleteErrors} old version(s) could not be removed from "${item.name}"`)
+      } else {
+        toast.success(`Renamed folder to ${newName}`)
+      }
+      loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+    } catch (err: any) {
+      toast.error('Rename failed: ' + (err.message || ''))
+    } finally {
+      setTimeout(() => setCurrentRename(null), 650)
+    }
+  }
+
   const restoreFile = async (item: FileItem) => {
     if (!selectedBucket || !client) return
     if (!item.versionId) {
@@ -2121,6 +2305,22 @@ function App() {
                   </div>
                 )}
 
+                {currentRename && (
+                  <div className="mb-5 card p-4">
+                    <div className="text-xs uppercase tracking-widest mb-1 text-blue-600 font-semibold">Renaming</div>
+                    <div className="flex justify-between text-xs mb-1 text-beige-600">
+                      <span>{currentRename.done}/{currentRename.total} operations</span>
+                    </div>
+                    <div className="h-2 bg-beige-200 rounded overflow-hidden mb-1">
+                      <div
+                        className="h-full bg-blue-500 transition-all"
+                        style={{ width: `${currentRename.total > 0 ? Math.round((currentRename.done / currentRename.total) * 100) : 0}%` }}
+                      />
+                    </div>
+                    {currentRename.name && <div className="text-sm truncate font-medium mt-1">{currentRename.name}</div>}
+                  </div>
+                )}
+
                 {/* Breadcrumb path (above the search toolbar). With more than two
                     buckets, "root" is the home crumb and lists buckets as folders;
                     otherwise the bucket name is the home crumb. */}
@@ -2352,6 +2552,18 @@ function App() {
                                 </div>
                               </div>
                             )}
+                            {/* Folder actions - always on mobile, hover on desktop. Buckets can't be renamed. */}
+                            {!item.isBucket && (
+                              <div className="absolute top-2 right-2 flex gap-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-30">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); renameFolder(item); }}
+                                  className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                  title="Rename folder"
+                                >
+                                  <Pencil size={15} />
+                                </button>
+                              </div>
+                            )}
                             <button
                               onClick={() => {
                                 if (longPressFired.current) { longPressFired.current = false; return }
@@ -2472,6 +2684,13 @@ function App() {
                                       title="Add/Edit note"
                                     >
                                       <MessageSquare size={15} />
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); renameFile(item); }}
+                                      className="bg-surface/90 hover:bg-surface text-beige-700 p-1.5 rounded-lg shadow-sm hover:shadow transition-colors"
+                                      title="Rename"
+                                    >
+                                      <Pencil size={15} />
                                     </button>
                                   </>
                                 )}
@@ -2617,10 +2836,19 @@ function App() {
                                   <button onClick={(e) => { e.stopPropagation(); openNoteModal(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Note">
                                     <MessageSquare size={14} />
                                   </button>
+                                  <button onClick={(e) => { e.stopPropagation(); renameFile(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Rename">
+                                    <Pencil size={14} />
+                                  </button>
                                 </>
                               )}
                               <button onClick={(e) => { e.stopPropagation(); deleteFile(item) }} className="p-1 rounded hover:bg-red-100 text-red-600" title="Delete">
                                 <Trash2 size={14} />
+                              </button>
+                            </div>
+                          ) : !item.isBucket ? (
+                            <div className="flex gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0">
+                              <button onClick={(e) => { e.stopPropagation(); renameFolder(item) }} className="p-1 rounded hover:bg-beige-100 text-beige-700" title="Rename">
+                                <Pencil size={14} />
                               </button>
                             </div>
                           ) : (
