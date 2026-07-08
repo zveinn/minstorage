@@ -17,7 +17,7 @@ import { XhrHttpHandler } from '@aws-sdk/xhr-http-handler'
 import {
   Upload as UploadIcon, Download, Trash2, Folder, File, Image as ImageIcon,
   LogOut, ChevronRight, ChevronLeft, X, Check, Eye, EyeOff, RotateCcw, Link, FolderPlus, FolderUp, MessageSquare,
-  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database, Pencil, EllipsisVertical
+  LayoutGrid, List, Menu, Sun, Moon, Search, Users, Database, Pencil, EllipsisVertical, FolderInput
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -316,6 +316,16 @@ function App() {
     y: number
     openUp: boolean
   } | null>(null)
+
+  // "Move to…" destination picker. bucket === null means the bucket-list
+  // level (cross-bucket moves, e.g. personal bucket → shared).
+  const [movePicker, setMovePicker] = useState<{
+    items: FileItem[]
+    bucket: string | null
+    prefix: string
+    folders: string[]
+    loading: boolean
+  } | null>(null)
   const [currentUpload, setCurrentUpload] = useState<{
     name: string
     percent: number
@@ -328,7 +338,10 @@ function App() {
     done: number
     total: number
   } | null>(null)
-  const [currentRename, setCurrentRename] = useState<{
+  // Progress for copy+delete operations (rename and move share the mechanics,
+  // only the label differs).
+  const [currentTransfer, setCurrentTransfer] = useState<{
+    verb: 'Renaming' | 'Moving'
     name: string
     done: number
     total: number
@@ -960,7 +973,7 @@ function App() {
   }
 
   const ACTION_MENU_WIDTH = 176 // matches w-44 on the dropdown
-  const ACTION_MENU_EST_HEIGHT = 200 // tallest variant (live file, 5 entries)
+  const ACTION_MENU_EST_HEIGHT = 240 // tallest variant (live file, 6 entries)
   const openActionMenu = (e: React.MouseEvent, item: FileItem) => {
     e.stopPropagation()
     const rect = e.currentTarget.getBoundingClientRect()
@@ -1064,34 +1077,87 @@ function App() {
     }
   }
 
-  // Server-side copy within the current bucket. CopySource wants
-  // "<bucket>/<key>" with each path segment URL-encoded (keys can contain
-  // spaces/unicode, but slashes must stay as separators).
-  const copyObject = async (fromKey: string, toKey: string) => {
+  // Server-side copy from the current bucket, optionally into another bucket.
+  // CopySource wants "<bucket>/<key>" with each path segment URL-encoded (keys
+  // can contain spaces/unicode, but slashes must stay as separators).
+  const copyObject = async (fromKey: string, toKey: string, toBucket?: string) => {
     if (!selectedBucket || !client) throw new Error('No bucket or client')
     const source = [selectedBucket, ...fromKey.split('/')].map(encodeURIComponent).join('/')
     await client.send(
-      new CopyObjectCommand({ Bucket: selectedBucket, CopySource: source, Key: toKey })
+      new CopyObjectCommand({ Bucket: toBucket || selectedBucket, CopySource: source, Key: toKey })
     )
   }
 
   // True when an object with exactly this key exists. The key itself sorts
   // first among keys sharing it as a prefix, so MaxKeys=1 is enough.
-  const keyExists = async (key: string): Promise<boolean> => {
+  const keyExists = async (key: string, bucket?: string): Promise<boolean> => {
     if (!selectedBucket || !client) return false
     const resp: any = await client.send(
-      new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: key, MaxKeys: 1 })
+      new ListObjectsV2Command({ Bucket: bucket || selectedBucket, Prefix: key, MaxKeys: 1 })
     )
     return (resp.Contents || []).some((o: any) => o.Key === key)
+  }
+
+  // Every live object key under a prefix in the current bucket (paginated).
+  const listKeysUnder = async (prefix: string): Promise<string[]> => {
+    if (!selectedBucket || !client) throw new Error('No bucket or client')
+    const keys: string[] = []
+    let continuationToken: string | undefined
+    let truncated = true
+    while (truncated) {
+      const page: any = await client.send(
+        new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: prefix, ContinuationToken: continuationToken })
+      )
+      for (const obj of (page.Contents || [])) {
+        if (obj.Key) keys.push(obj.Key)
+      }
+      truncated = !!page.IsTruncated
+      continuationToken = page.NextContinuationToken
+    }
+    return keys
+  }
+
+  // Purge every version + delete marker under a prefix. MinIO keeps listing a
+  // prefix that holds only delete markers, so making a folder disappear for
+  // good requires purging, not soft-deleting. Calls onKey once per distinct
+  // key (for progress); returns how many version deletes failed.
+  const purgeUnderPrefix = async (prefix: string, onKey?: () => void): Promise<number> => {
+    if (!selectedBucket || !client) throw new Error('No bucket or client')
+    let errors = 0
+    const seenKeys = new Set<string>()
+    let keyMarker: string | undefined
+    let versionIdMarker: string | undefined
+    let truncated = true
+    while (truncated) {
+      const page: any = await client.send(
+        new ListObjectVersionsCommand({ Bucket: selectedBucket, Prefix: prefix, KeyMarker: keyMarker, VersionIdMarker: versionIdMarker })
+      )
+      const versions = [...(page.Versions || []), ...(page.DeleteMarkers || [])].filter((v: any) => v.Key && v.VersionId)
+      for (const v of versions) {
+        try {
+          await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: v.Key, VersionId: v.VersionId }))
+        } catch {
+          errors++
+        }
+        if (!seenKeys.has(v.Key)) {
+          seenKeys.add(v.Key)
+          onKey?.()
+        }
+      }
+      truncated = !!page.IsTruncated
+      keyMarker = page.NextKeyMarker
+      versionIdMarker = page.NextVersionIdMarker
+    }
+    return errors
   }
 
   // A folder counts as "soft-deleted" once it has no live objects left under it
   // (everything is a delete marker). We detect that by asking for a single live
   // object: empty means the folder is in the soft-deleted state.
-  const prefixHasLiveObjects = async (prefix: string): Promise<boolean> => {
+  const prefixHasLiveObjects = async (prefix: string, bucket?: string): Promise<boolean> => {
     if (!selectedBucket || !client) return false
     const resp: any = await client.send(
-      new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: prefix, MaxKeys: 1 })
+      new ListObjectsV2Command({ Bucket: bucket || selectedBucket, Prefix: prefix, MaxKeys: 1 })
     )
     return (resp.Contents || []).length > 0
   }
@@ -1808,27 +1874,12 @@ function App() {
     const newPrefix = oldPrefix.slice(0, oldPrefix.length - item.name.length - 1) + newName + '/'
 
     try {
-      const existing: any = await client.send(
-        new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: newPrefix, MaxKeys: 1 })
-      )
-      if ((existing.Contents || []).length > 0) {
+      if (await prefixHasLiveObjects(newPrefix)) {
         toast.error(`A folder named "${newName}" already exists`)
         return
       }
 
-      const keys: string[] = []
-      let continuationToken: string | undefined
-      let isTruncated = true
-      while (isTruncated) {
-        const page: any = await client.send(
-          new ListObjectsV2Command({ Bucket: selectedBucket, Prefix: oldPrefix, ContinuationToken: continuationToken })
-        )
-        for (const obj of (page.Contents || [])) {
-          if (obj.Key) keys.push(obj.Key)
-        }
-        isTruncated = !!page.IsTruncated
-        continuationToken = page.NextContinuationToken
-      }
+      const keys = await listKeysUnder(oldPrefix)
       if (keys.length === 0) {
         toast.error('Folder is empty or no longer exists')
         loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
@@ -1836,53 +1887,26 @@ function App() {
       }
 
       const label = `${item.name}/ → ${newName}/`
-      // Each key is one copy + one delete.
+      // Each key is one copy + one delete (progress counts keys, not versions).
       const total = keys.length * 2
       let done = 0
-      setCurrentRename({ name: label, done, total })
+      const tick = () => setCurrentTransfer({ verb: 'Renaming', name: label, done: Math.min(done, total), total })
+      tick()
 
       try {
         for (const key of keys) {
           await copyObject(key, newPrefix + key.slice(oldPrefix.length))
           done++
-          setCurrentRename({ name: label, done, total })
+          tick()
         }
       } catch (err: any) {
         toast.error(`Rename failed while copying (nothing was deleted): ${err.message || ''}`)
         return
       }
 
-      // Purge every version + delete marker under the old prefix. A soft
-      // delete is not enough here: MinIO keeps listing a prefix that holds
-      // only delete markers, so the old folder would linger as a ghost.
-      let deleteErrors = 0
-      const seenKeys = new Set<string>()
-      let keyMarker: string | undefined
-      let versionIdMarker: string | undefined
-      let truncated = true
-      while (truncated) {
-        const page: any = await client.send(
-          new ListObjectVersionsCommand({ Bucket: selectedBucket, Prefix: oldPrefix, KeyMarker: keyMarker, VersionIdMarker: versionIdMarker })
-        )
-        const versions = [...(page.Versions || []), ...(page.DeleteMarkers || [])].filter((v: any) => v.Key && v.VersionId)
-        for (const v of versions) {
-          try {
-            await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: v.Key, VersionId: v.VersionId }))
-          } catch {
-            deleteErrors++
-          }
-          // Progress counts keys, not versions — a key may have many versions.
-          if (!seenKeys.has(v.Key)) {
-            seenKeys.add(v.Key)
-            done++
-            setCurrentRename({ name: label, done: Math.min(done, total), total })
-          }
-        }
-        truncated = !!page.IsTruncated
-        keyMarker = page.NextKeyMarker
-        versionIdMarker = page.NextVersionIdMarker
-      }
-      setCurrentRename({ name: label, done: total, total })
+      const deleteErrors = await purgeUnderPrefix(oldPrefix, () => { done++; tick() })
+      done = total
+      tick()
 
       if (deleteErrors > 0) {
         toast.error(`Renamed, but ${deleteErrors} old version(s) could not be removed from "${item.name}"`)
@@ -1893,8 +1917,177 @@ function App() {
     } catch (err: any) {
       toast.error('Rename failed: ' + (err.message || ''))
     } finally {
-      setTimeout(() => setCurrentRename(null), 650)
+      setTimeout(() => setCurrentTransfer(null), 650)
     }
+  }
+
+  // The source-side parent prefix an item lives in (for folders, the prefix
+  // that contains the folder itself).
+  const parentPrefixOf = (item: FileItem): string =>
+    item.isDir
+      ? item.fullPath.slice(0, item.fullPath.length - item.name.length - 1)
+      : item.fullPath.slice(0, item.fullPath.lastIndexOf('/') + 1)
+
+  const openMovePicker = (itemsToMove: FileItem[]) => {
+    if (!selectedBucket || !client) return
+    const movable = itemsToMove.filter(i => !i.isBucket && !i.isDeleted)
+    if (movable.length === 0) {
+      toast.info('Nothing movable selected (deleted items cannot be moved)')
+      return
+    }
+    setMovePicker({ items: movable, bucket: selectedBucket, prefix: currentPrefix, folders: [], loading: true })
+    loadPickerLevel(selectedBucket, currentPrefix)
+  }
+
+  const loadPickerLevel = async (bucket: string | null, prefix: string) => {
+    setMovePicker(p => (p ? { ...p, bucket, prefix, folders: [], loading: bucket !== null } : p))
+    if (bucket === null || !client) return
+    try {
+      const { prefixes } = await listObjectsWithPrefix(client, bucket, prefix, false)
+      // Ignore stale responses if the user has already navigated elsewhere.
+      setMovePicker(p => (p && p.bucket === bucket && p.prefix === prefix ? { ...p, folders: prefixes.sort(), loading: false } : p))
+    } catch (err: any) {
+      toast.error('Failed to list folders: ' + (err.message || ''))
+      setMovePicker(p => (p && p.bucket === bucket && p.prefix === prefix ? { ...p, loading: false } : p))
+    }
+  }
+
+  const createFolderInPicker = async () => {
+    const p = movePicker
+    if (!p || !p.bucket || !client) return
+    const folderName = await askPrompt({
+      title: 'New folder',
+      label: 'Folder name',
+      placeholder: 'e.g. vacation-2024',
+      confirmLabel: 'Create',
+    })
+    if (!folderName || !folderName.trim()) return
+    const name = folderName.trim()
+    if (name.includes('/')) {
+      toast.error('Folder name cannot contain /')
+      return
+    }
+    try {
+      await client.send(new PutObjectCommand({ Bucket: p.bucket, Key: `${p.prefix}${name}/`, Body: '' }))
+      loadPickerLevel(p.bucket, p.prefix)
+    } catch (err: any) {
+      toast.error('Failed to create folder: ' + (err.message || ''))
+    }
+  }
+
+  const confirmMove = () => {
+    const p = movePicker
+    if (!p || !p.bucket) return
+    setMovePicker(null)
+    moveItems(p.items, p.bucket, p.prefix)
+  }
+
+  // Move files/folders into destBucket/destPrefix. Same mechanics as rename:
+  // server-side copy first, then remove the original (files soft-delete and
+  // stay recoverable; folder prefixes are purged so no ghost folder lingers).
+  const moveItems = async (toMove: FileItem[], destBucket: string, destPrefix: string) => {
+    if (!selectedBucket || !client) return
+
+    // Plan everything up front so collisions/no-ops are skipped before any
+    // copy happens and the progress total is known.
+    const skipped: string[] = []
+    const fileOps: { item: FileItem; toKey: string }[] = []
+    const folderOps: { item: FileItem; keys: string[]; toPrefix: string }[] = []
+    try {
+      for (const item of toMove) {
+        const sameBucket = destBucket === selectedBucket
+        if (sameBucket && destPrefix === parentPrefixOf(item)) {
+          skipped.push(`"${item.name}" is already in this folder`)
+          continue
+        }
+        if (item.isDir) {
+          if (sameBucket && destPrefix.startsWith(item.fullPath)) {
+            skipped.push(`"${item.name}" cannot be moved into itself`)
+            continue
+          }
+          const toPrefix = destPrefix + item.name + '/'
+          if (await prefixHasLiveObjects(toPrefix, destBucket)) {
+            skipped.push(`a folder named "${item.name}" already exists at the destination`)
+            continue
+          }
+          const keys = await listKeysUnder(item.fullPath)
+          if (keys.length > 0) folderOps.push({ item, keys, toPrefix })
+        } else {
+          const base = item.fullPath.slice(parentPrefixOf(item).length)
+          const toKey = destPrefix + base
+          // Timestamp-stamped keys are unique by construction; only unstamped
+          // (legacy) names can collide at the destination.
+          if (!/^\d{13,}-/.test(base) && (await keyExists(toKey, destBucket))) {
+            skipped.push(`"${item.name}" already exists at the destination`)
+            continue
+          }
+          fileOps.push({ item, toKey })
+        }
+      }
+    } catch (err: any) {
+      toast.error('Move failed: ' + (err.message || ''))
+      return
+    }
+    for (const reason of skipped) toast.error(`Skipped: ${reason}`)
+    if (fileOps.length === 0 && folderOps.length === 0) return
+
+    const count = fileOps.length + folderOps.length
+    const label = count === 1 ? (fileOps[0]?.item.name ?? folderOps[0]?.item.name ?? '') : `${count} items`
+    const total = fileOps.length * 2 + folderOps.reduce((n, f) => n + f.keys.length * 2, 0)
+    let done = 0
+    const tick = () => setCurrentTransfer({ verb: 'Moving', name: label, done: Math.min(done, total), total })
+    tick()
+
+    let moved = 0
+    let errors = 0
+    try {
+      for (const op of fileOps) {
+        try {
+          await copyObject(op.item.fullPath, op.toKey, destBucket)
+          done++
+          tick()
+          await client.send(new DeleteObjectCommand({ Bucket: selectedBucket, Key: op.item.fullPath }))
+          done++
+          tick()
+          moved++
+        } catch (err: any) {
+          console.error('Move failed for', op.item.name, err)
+          errors++
+        }
+      }
+      for (const f of folderOps) {
+        try {
+          for (const key of f.keys) {
+            await copyObject(key, f.toPrefix + key.slice(f.item.fullPath.length), destBucket)
+            done++
+            tick()
+          }
+          const deleteErrors = await purgeUnderPrefix(f.item.fullPath, () => { done++; tick() })
+          if (deleteErrors > 0) {
+            toast.error(`Moved "${f.item.name}", but ${deleteErrors} old version(s) could not be removed`)
+          }
+          moved++
+        } catch (err: any) {
+          console.error('Move failed for', f.item.name, err)
+          errors++
+        }
+      }
+      done = total
+      tick()
+    } finally {
+      setTimeout(() => setCurrentTransfer(null), 650)
+    }
+
+    if (moved > 0) toast.success(`Moved ${moved} item(s) to ${destBucket}/${destPrefix || ''}`)
+    if (errors > 0) toast.error(`Failed to move ${errors} item(s)`)
+    clearSelection()
+    loadObjects(selectedBucket, currentPrefix, client, creds, showDeleted)
+  }
+
+  const moveSelectedItems = () => {
+    if (selectedItems.size === 0) return
+    const paths = Array.from(selectedItems)
+    openMovePicker(items.filter(i => paths.includes(i.fullPath)))
   }
 
   const restoreFile = async (item: FileItem) => {
@@ -2099,6 +2292,9 @@ function App() {
                 <button onClick={downloadSelectedItems} className="btn btn-primary text-sm py-1.5 px-3">
                   Download
                 </button>
+                <button onClick={moveSelectedItems} className="btn btn-secondary text-sm py-1.5 px-3">
+                  Move
+                </button>
                 <button onClick={restoreSelectedItems} className="btn btn-secondary text-sm py-1.5 px-3 text-green-600 hover:bg-green-50">
                   Restore
                 </button>
@@ -2215,6 +2411,7 @@ function App() {
                   </button>
                   <div className="grid grid-cols-2 gap-1.5">
                     <button onClick={() => { downloadSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-primary text-sm py-2 justify-center">Download</button>
+                    <button onClick={() => { moveSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2 justify-center">Move</button>
                     <button onClick={() => { restoreSelectedItems(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2 justify-center text-green-600">Restore</button>
                     <button onClick={() => { deleteSelectedItems(); setMobileMenuOpen(false); }} className={`btn text-sm py-2 justify-center ${selectedDeleteIsForce ? 'btn-primary bg-red-600 text-white' : 'btn-secondary text-red-600'}`}>{selectedDeleteIsForce ? 'Delete forever' : 'Delete'}</button>
                     <button onClick={() => { clearSelection(); setMobileMenuOpen(false); }} className="btn btn-secondary text-sm py-2 justify-center">Clear</button>
@@ -2328,19 +2525,19 @@ function App() {
                   </div>
                 )}
 
-                {currentRename && (
+                {currentTransfer && (
                   <div className="mb-5 card p-4">
-                    <div className="text-xs uppercase tracking-widest mb-1 text-blue-600 font-semibold">Renaming</div>
+                    <div className="text-xs uppercase tracking-widest mb-1 text-blue-600 font-semibold">{currentTransfer.verb}</div>
                     <div className="flex justify-between text-xs mb-1 text-beige-600">
-                      <span>{currentRename.done}/{currentRename.total} operations</span>
+                      <span>{currentTransfer.done}/{currentTransfer.total} operations</span>
                     </div>
                     <div className="h-2 bg-beige-200 rounded overflow-hidden mb-1">
                       <div
                         className="h-full bg-blue-500 transition-all"
-                        style={{ width: `${currentRename.total > 0 ? Math.round((currentRename.done / currentRename.total) * 100) : 0}%` }}
+                        style={{ width: `${currentTransfer.total > 0 ? Math.round((currentTransfer.done / currentTransfer.total) * 100) : 0}%` }}
                       />
                     </div>
-                    {currentRename.name && <div className="text-sm truncate font-medium mt-1">{currentRename.name}</div>}
+                    {currentTransfer.name && <div className="text-sm truncate font-medium mt-1">{currentTransfer.name}</div>}
                   </div>
                 )}
 
@@ -3084,6 +3281,118 @@ function App() {
       )}
 
       {/* Confirm dialog */}
+      {/* Move destination picker */}
+      {movePicker && (() => {
+        const p = movePicker
+        const movingDirs = p.items.filter(i => i.isDir)
+        const sameBucket = p.bucket === selectedBucket
+        // Invalid: inside a folder that is itself being moved.
+        const intoSelf = sameBucket && movingDirs.some(d => p.prefix.startsWith(d.fullPath))
+        // Pointless: every item already lives at this destination.
+        const allNoop = p.bucket !== null && p.items.every(i => sameBucket && p.prefix === parentPrefixOf(i))
+        const canMoveHere = p.bucket !== null && !p.loading && !intoSelf && !allNoop
+        const crumbs = p.prefix.split('/').filter(Boolean)
+        return (
+          <div className="modal" onClick={() => setMovePicker(null)}>
+            <div className="modal-content w-full max-w-md mx-auto" onClick={e => e.stopPropagation()}>
+              <div className="px-5 py-3 border-b border-beige-200 bg-beige-50 font-medium">
+                Move {p.items.length === 1 ? `"${p.items[0].name}"` : `${p.items.length} items`}
+              </div>
+
+              {/* Destination breadcrumb */}
+              <div className="px-5 py-2.5 border-b border-beige-200 flex items-center gap-1 text-sm overflow-x-auto whitespace-nowrap">
+                {buckets.length > 1 && (
+                  <>
+                    <button className="hover:underline text-beige-700 shrink-0" onClick={() => loadPickerLevel(null, '')}>
+                      Buckets
+                    </button>
+                    {p.bucket && <ChevronRight size={13} className="text-beige-500 shrink-0" />}
+                  </>
+                )}
+                {p.bucket && (
+                  <button className="hover:underline font-medium shrink-0" onClick={() => loadPickerLevel(p.bucket, '')}>
+                    {p.bucket}
+                  </button>
+                )}
+                {crumbs.map((seg, idx) => (
+                  <React.Fragment key={idx}>
+                    <ChevronRight size={13} className="text-beige-500 shrink-0" />
+                    <button
+                      className="hover:underline shrink-0"
+                      onClick={() => loadPickerLevel(p.bucket, crumbs.slice(0, idx + 1).join('/') + '/')}
+                    >
+                      {seg}
+                    </button>
+                  </React.Fragment>
+                ))}
+              </div>
+
+              {/* Folder list (one level at a time, lazy) */}
+              <div className="flex-1 overflow-y-auto min-h-[200px] max-h-[45vh] p-2">
+                {p.bucket === null ? (
+                  buckets.map(b => (
+                    <button key={b} className="menu-item" onClick={() => loadPickerLevel(b, '')}>
+                      <Database size={15} className="text-beige-600 shrink-0" />
+                      <span className="truncate">{b}</span>
+                    </button>
+                  ))
+                ) : p.loading ? (
+                  <div className="p-4 text-sm text-beige-600">Loading…</div>
+                ) : p.folders.length === 0 ? (
+                  <div className="p-4 text-sm text-beige-600">No subfolders</div>
+                ) : (
+                  p.folders.map(fp => {
+                    const name = fp.slice(p.prefix.length).replace(/\/$/, '')
+                    const beingMoved = sameBucket && movingDirs.some(d => d.fullPath === fp)
+                    return (
+                      <button
+                        key={fp}
+                        disabled={beingMoved}
+                        className={`menu-item ${beingMoved ? 'opacity-40 cursor-not-allowed' : ''}`}
+                        onClick={() => loadPickerLevel(p.bucket, fp)}
+                      >
+                        <Folder size={15} className="text-beige-600 shrink-0" />
+                        <span className="truncate">{name}</span>
+                        {beingMoved && <span className="ml-auto text-[10px] text-beige-500 shrink-0">being moved</span>}
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="px-5 py-4 border-t border-beige-200">
+                <div className="text-xs text-beige-600 truncate mb-3">
+                  {p.bucket === null
+                    ? 'Choose a destination bucket'
+                    : intoSelf
+                      ? 'Cannot move a folder into itself'
+                      : allNoop
+                        ? 'Items are already in this folder'
+                        : <>Destination: <span className="font-medium text-warm-900">{p.bucket}/{p.prefix}</span></>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={createFolderInPicker}
+                    disabled={p.bucket === null}
+                    className="btn btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 disabled:opacity-40"
+                  >
+                    <FolderPlus size={14} /> New folder
+                  </button>
+                  <div className="flex-1" />
+                  <button onClick={() => setMovePicker(null)} className="btn btn-secondary text-sm py-1.5 px-3">
+                    Cancel
+                  </button>
+                  <button onClick={confirmMove} disabled={!canMoveHere} className="btn btn-primary text-sm py-1.5 px-3 disabled:opacity-40">
+                    Move here
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {confirmDialog && (
         <div className="modal" onClick={() => resolveConfirm(false)}>
           <div className="modal-content w-full max-w-sm mx-auto" onClick={e => e.stopPropagation()}>
@@ -3173,9 +3482,14 @@ function App() {
               }}
             >
               {mi.isDir ? (
-                <button className={entryCls} onClick={() => runAction(() => renameFolder(mi))}>
-                  <Pencil size={14} className="text-beige-600" /> Rename
-                </button>
+                <>
+                  <button className={entryCls} onClick={() => runAction(() => renameFolder(mi))}>
+                    <Pencil size={14} className="text-beige-600" /> Rename
+                  </button>
+                  <button className={entryCls} onClick={() => runAction(() => openMovePicker([mi]))}>
+                    <FolderInput size={14} className="text-beige-600" /> Move to…
+                  </button>
+                </>
               ) : mi.isDeleted ? (
                 <>
                   <button className={entryCls} onClick={() => runAction(() => restoreFile(mi))}>
@@ -3198,6 +3512,9 @@ function App() {
                   </button>
                   <button className={entryCls} onClick={() => runAction(() => renameFile(mi))}>
                     <Pencil size={14} className="text-beige-600" /> Rename
+                  </button>
+                  <button className={entryCls} onClick={() => runAction(() => openMovePicker([mi]))}>
+                    <FolderInput size={14} className="text-beige-600" /> Move to…
                   </button>
                   <button className={`${entryCls} text-red-600`} onClick={() => runAction(() => deleteFile(mi))}>
                     <Trash2 size={14} /> Delete
